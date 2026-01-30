@@ -57,7 +57,8 @@ install_system_deps() {
 
     case $OS in
         debian)
-            sudo apt-get update
+            # Allow update to fail (some repos might be broken) but continue
+            sudo apt-get update || warn "apt-get update had errors, continuing anyway..."
             sudo apt-get install -y python3 python3-pip python3-venv git curl
             ;;
         fedora)
@@ -88,9 +89,9 @@ install_vagrant() {
 
     case $OS in
         debian)
-            wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg 2>/dev/null || true
             echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
-            sudo apt-get update
+            sudo apt-get update || warn "apt-get update had errors, continuing..."
             sudo apt-get install -y vagrant
             ;;
         fedora)
