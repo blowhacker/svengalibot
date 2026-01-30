@@ -359,6 +359,31 @@ ui:
 
 ---
 
+## Installation
+
+```bash
+git clone git@github.com:blowhacker/svengalibot.git
+cd svengalibot
+./install.sh
+```
+
+Or skip prompts with:
+```bash
+./install.sh --yes
+```
+
+The installer handles:
+- System dependencies (python3, git, curl)
+- Vagrant + VirtualBox
+- Claude CLI
+- Python venv + pip dependencies
+- Directory structure
+- Default config files
+- Vagrant VM configuration
+- Git bare repo for worker communication
+
+---
+
 ## Next Steps
 
 1. Set up Flask skeleton with basic routes
