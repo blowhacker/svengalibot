@@ -91,8 +91,9 @@ class Worker:
         logger.debug(f"Prompt (first 200 chars): {prompt[:200]}...")
 
         try:
-            # Get diff before
-            diff_before = self._get_git_diff()
+            # Get the current commit hash BEFORE running Claude
+            # Claude may commit changes, so we need to diff against this baseline
+            baseline_commit = self._get_current_commit()
 
             # Run Claude CLI with prompt via stdin
             process = subprocess.Popen(
@@ -120,9 +121,8 @@ class Worker:
             output = "".join(output_lines)
             logger.info(f"Claude CLI exited with code {process.returncode}")
 
-            # Get diff after
-            diff_after = self._get_git_diff()
-            diff = diff_after if diff_after != diff_before else ""
+            # Get diff of all changes since baseline (includes committed changes)
+            diff = self._get_diff_since_commit(baseline_commit)
 
             # Extract summary (last paragraph or explicit summary)
             summary = self._extract_summary(output)
@@ -244,17 +244,48 @@ class Worker:
                 error=str(e),
             )
 
-    def _get_git_diff(self) -> str:
-        """Get current git diff in workspace."""
+    def _get_current_commit(self) -> str:
+        """Get the current HEAD commit hash."""
         try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=self.workspace_dir,
+                capture_output=True,
+                text=True,
+            )
+            return result.stdout.strip()
+        except Exception:
+            return ""
+
+    def _get_diff_since_commit(self, commit_hash: str) -> str:
+        """Get diff of all changes since a specific commit."""
+        if not commit_hash:
+            return ""
+        try:
+            # Get diff between baseline commit and current HEAD (committed changes)
+            result = subprocess.run(
+                ["git", "diff", commit_hash, "HEAD"],
+                cwd=self.workspace_dir,
+                capture_output=True,
+                text=True,
+            )
+            committed_diff = result.stdout
+
+            # Also get any uncommitted changes
             result = subprocess.run(
                 ["git", "diff", "HEAD"],
                 cwd=self.workspace_dir,
                 capture_output=True,
                 text=True,
             )
-            return result.stdout
-        except Exception:
+            uncommitted_diff = result.stdout
+
+            # Combine both (committed changes + any staged/unstaged changes)
+            if uncommitted_diff:
+                return committed_diff + "\n" + uncommitted_diff
+            return committed_diff
+        except Exception as e:
+            logger.error(f"Failed to get diff: {e}")
             return ""
 
     def _get_remote_diff(self) -> str:

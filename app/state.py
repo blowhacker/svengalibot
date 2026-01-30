@@ -1,12 +1,15 @@
 """File-based state management for tasks and chunks."""
 
 import json
+import logging
 import uuid
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field, asdict
+
+logger = logging.getLogger(__name__)
 
 
 class TaskStatus(Enum):
@@ -165,10 +168,17 @@ class StateManager:
         if not meta_path.exists():
             return None
 
-        with open(meta_path) as f:
-            data = json.load(f)
-
-        return Task.from_dict(data)
+        try:
+            with open(meta_path) as f:
+                content = f.read()
+                if not content.strip():
+                    logger.warning(f"Task file is empty: {meta_path}")
+                    return None
+                data = json.loads(content)
+            return Task.from_dict(data)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse task file {meta_path}: {e}")
+            return None
 
     def update_task(self, task_id: str, **updates) -> Optional[Task]:
         """Update task fields."""
