@@ -25,11 +25,11 @@ Consider:
 
 Respond with a JSON object:
 ```json
-{
+{{
   "analysis": "Brief analysis of the task and approach",
   "research_needed": ["List of topics to research before starting, if any"],
   "chunks": [
-    {
+    {{
       "id": 1,
       "title": "Short descriptive title",
       "description": "Detailed description of what to implement",
@@ -37,11 +37,11 @@ Respond with a JSON object:
       "depends_on": [],
       "estimated_complexity": "low|medium|high",
       "files_likely_affected": ["list of file paths"]
-    }
+    }}
   ],
   "risks": ["List of potential issues or blockers"],
   "notes": "Any additional notes for the implementer"
-}
+}}
 ```
 
 Be thorough but pragmatic. Prefer fewer, well-defined chunks over many tiny ones.

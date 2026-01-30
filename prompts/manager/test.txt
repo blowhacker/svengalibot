@@ -24,32 +24,32 @@ Design tests to verify the implementation works correctly. Focus on:
 
 Respond with a JSON object:
 ```json
-{
+{{
   "test_plan": [
-    {
+    {{
       "name": "Test name",
       "description": "What this test verifies",
       "type": "unit|integration|e2e",
       "steps": ["Step by step instructions"],
       "expected_result": "What should happen",
       "command": "Command to run if applicable"
-    }
+    }}
   ],
   "automated_tests": [
-    {
+    {{
       "command": "pytest tests/test_foo.py -k test_bar",
       "expected_outcome": "All tests pass"
-    }
+    }}
   ],
   "manual_verification": [
-    {
+    {{
       "action": "What to do manually",
       "expected": "What should be observed"
-    }
+    }}
   ],
   "test_data_needed": ["Any test fixtures or data required"],
   "environment_setup": ["Any setup required before testing"]
-}
+}}
 ```
 
 Be practical. Focus on tests that verify real functionality.

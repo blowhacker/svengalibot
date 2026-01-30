@@ -32,23 +32,23 @@ Review the changes for:
 
 Respond with a JSON object:
 ```json
-{
+{{
   "decision": "approved|rejected",
   "summary": "Brief summary of your review",
-  "criteria_status": {
-    "criterion_1": {"met": true, "notes": ""},
-    "criterion_2": {"met": false, "notes": "Why it's not met"}
-  },
+  "criteria_status": {{
+    "criterion_1": {{"met": true, "notes": ""}},
+    "criterion_2": {{"met": false, "notes": "Why it's not met"}}
+  }},
   "guide_violations": [
-    {"rule": "Guide rule violated", "location": "file:line", "details": "Explanation"}
+    {{"rule": "Guide rule violated", "location": "file:line", "details": "Explanation"}}
   ],
   "issues": [
-    {"severity": "critical|major|minor", "description": "Issue description", "suggestion": "How to fix"}
+    {{"severity": "critical|major|minor", "description": "Issue description", "suggestion": "How to fix"}}
   ],
   "positive_notes": ["Things done well"],
   "tests_to_run": ["Commands to verify the implementation"],
   "feedback_for_retry": "If rejected, clear instructions for the next attempt"
-}
+}}
 ```
 
 Be constructive and specific. If rejecting, provide actionable feedback.
