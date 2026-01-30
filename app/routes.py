@@ -10,7 +10,9 @@ main_bp = Blueprint("main", __name__)
 
 # Global event queues for SSE (task_id -> list of queues)
 _event_queues: dict[str, list[queue.Queue]] = {}
+_event_buffer: dict[str, list[dict]] = {}  # Store recent events per task
 _queues_lock = threading.Lock()
+MAX_BUFFERED_EVENTS = 100
 
 # Global singleton for orchestrator (must persist across requests)
 _orchestrator = None
@@ -58,6 +60,13 @@ def _broadcast_event(event):
     }
 
     with _queues_lock:
+        # Store in buffer for late-joining clients
+        if task_id not in _event_buffer:
+            _event_buffer[task_id] = []
+        _event_buffer[task_id].append(event_data)
+        # Trim buffer if too large
+        if len(_event_buffer[task_id]) > MAX_BUFFERED_EVENTS:
+            _event_buffer[task_id] = _event_buffer[task_id][-MAX_BUFFERED_EVENTS:]
         if task_id in _event_queues:
             for q in _event_queues[task_id]:
                 try:
@@ -212,6 +221,10 @@ def stream_task(task_id):
     task = state.get_task(task_id)
     initial_state = task.to_dict() if task else None
 
+    # Get buffered events before entering generator
+    with _queues_lock:
+        buffered = list(_event_buffer.get(task_id, []))
+
     def generate():
         # Create a queue for this subscriber
         q = queue.Queue(maxsize=100)
@@ -228,6 +241,10 @@ def stream_task(task_id):
             # Send current task state (captured before generator started)
             if initial_state:
                 yield f"data: {json.dumps({'type': 'state', 'task': initial_state})}\n\n"
+
+            # Send buffered events that were emitted before this client connected
+            for event in buffered:
+                yield f"data: {json.dumps(event)}\n\n"
 
             # Stream events
             while True:
