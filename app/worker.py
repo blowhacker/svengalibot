@@ -84,7 +84,8 @@ class Worker:
         prompt = self._build_prompt(chunk_spec, context, guide, previous_feedback)
 
         # Build command - use -p for print mode with prompt via stdin
-        cmd = ["claude", "-p"]
+        # --dangerously-skip-permissions allows file writes without prompting
+        cmd = ["claude", "-p", "--dangerously-skip-permissions"]
 
         logger.info(f"Executing Claude CLI in {self.workspace_dir}")
         logger.debug(f"Prompt (first 200 chars): {prompt[:200]}...")
