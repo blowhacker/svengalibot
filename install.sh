@@ -32,6 +32,24 @@ detect_os() {
     fi
 }
 
+# Detect architecture
+detect_arch() {
+    local arch=$(uname -m)
+    case $arch in
+        arm64|aarch64)
+            echo "arm64"
+            ;;
+        x86_64|amd64)
+            echo "x86_64"
+            ;;
+        *)
+            echo "$arch"
+            ;;
+    esac
+}
+
+ARCH=$(detect_arch)
+
 OS=$(detect_os)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -40,6 +58,13 @@ echo "╔═══════════════════════�
 echo "║       Svengalibot Installer           ║"
 echo "╚═══════════════════════════════════════╝"
 echo ""
+
+# Warn about ARM architecture
+if [[ "$ARCH" == "arm64" ]]; then
+    warn "Detected ARM64 architecture (Apple Silicon or ARM Linux)"
+    warn "VirtualBox is not available - Docker will be used for sandboxing"
+    echo ""
+fi
 
 # Check for required commands
 check_command() {
@@ -110,8 +135,16 @@ install_vagrant() {
     success "Vagrant installed"
 }
 
-# Install VirtualBox (default provider for Vagrant)
+# Install VirtualBox or Docker (depending on architecture)
 install_virtualbox() {
+    # On ARM Macs, VirtualBox doesn't work - use Docker instead
+    if [[ "$OS" == "macos" && "$ARCH" == "arm64" ]]; then
+        warn "VirtualBox is not supported on Apple Silicon (M1/M2/M3)"
+        info "Using Docker as the VM provider instead..."
+        install_docker
+        return $?
+    fi
+
     if check_command VBoxManage; then
         return 0
     fi
@@ -136,6 +169,41 @@ install_virtualbox() {
             ;;
     esac
     success "VirtualBox installed"
+}
+
+# Install Docker (alternative to VirtualBox, required for ARM)
+install_docker() {
+    if check_command docker; then
+        return 0
+    fi
+
+    info "Installing Docker..."
+
+    case $OS in
+        debian)
+            curl -fsSL https://get.docker.com | sudo bash
+            sudo usermod -aG docker $USER
+            ;;
+        fedora)
+            sudo dnf install -y docker
+            sudo systemctl enable --now docker
+            sudo usermod -aG docker $USER
+            ;;
+        arch)
+            sudo pacman -Sy --noconfirm docker
+            sudo systemctl enable --now docker
+            sudo usermod -aG docker $USER
+            ;;
+        macos)
+            brew install --cask docker
+            warn "Please open Docker Desktop to complete installation"
+            ;;
+        *)
+            warn "Please install Docker manually: https://docs.docker.com/get-docker/"
+            return 1
+            ;;
+    esac
+    success "Docker installed"
 }
 
 # Install Claude CLI
@@ -315,18 +383,46 @@ setup_vagrant() {
 
 NUM_VMS = ENV['SVENGALI_VM_COUNT'] || 3
 
+# Detect architecture for provider selection
+def arm_architecture?
+  host_arch = `uname -m`.strip
+  ['arm64', 'aarch64'].include?(host_arch)
+end
+
 Vagrant.configure("2") do |config|
-  config.vm.box = "ubuntu/jammy64"
+  # Use different box based on architecture
+  if arm_architecture?
+    # ARM64 - use Docker provider
+    config.vm.provider "docker" do |d|
+      d.image = "ubuntu:22.04"
+      d.remains_running = true
+      d.has_ssh = true
+    end
+  else
+    # x86_64 - use VirtualBox
+    config.vm.box = "ubuntu/jammy64"
+  end
 
   (1..NUM_VMS.to_i).each do |i|
     config.vm.define "worker-#{i}" do |node|
       node.vm.hostname = "svengali-worker-#{i}"
-      node.vm.network "private_network", type: "dhcp"
+
+      unless arm_architecture?
+        node.vm.network "private_network", type: "dhcp"
+      end
 
       node.vm.provider "virtualbox" do |vb|
         vb.memory = "4096"
         vb.cpus = 2
         vb.name = "svengali-worker-#{i}"
+      end
+
+      node.vm.provider "docker" do |d|
+        d.image = "ubuntu:22.04"
+        d.name = "svengali-worker-#{i}"
+        d.remains_running = true
+        d.has_ssh = true
+        d.create_args = ["--memory=4g", "--cpus=2"]
       end
 
       node.vm.provision "shell", path: "provision.sh"
@@ -431,7 +527,7 @@ print_summary() {
 
 # Main installation flow
 main() {
-    info "Detected OS: $OS"
+    info "Detected OS: $OS ($ARCH)"
     echo ""
 
     # Check what's already installed
