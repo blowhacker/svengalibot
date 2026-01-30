@@ -169,9 +169,34 @@ function handleSSEEvent(data) {
             terminal.textContent += '[Manager is planning the task...]\n';
             break;
 
+        case 'manager_thinking':
+            terminal.textContent += `[⏳ ${data.data?.message || 'Thinking...'}]\n`;
+            terminal.scrollTop = terminal.scrollHeight;
+            break;
+
+        case 'manager_response':
+            terminal.textContent += `[✓ ${data.data?.message || 'Response received'}]\n`;
+            terminal.scrollTop = terminal.scrollHeight;
+            break;
+
+        case 'research_started':
+            terminal.textContent += `[🔍 Researching: ${data.data?.topic || 'topic'}...]\n`;
+            terminal.scrollTop = terminal.scrollHeight;
+            break;
+
+        case 'research_completed':
+            terminal.textContent += `[✓ Research complete: ${data.data?.result || ''}]\n`;
+            terminal.scrollTop = terminal.scrollHeight;
+            break;
+
         case 'task_planned':
-            terminal.textContent += '[Planning complete]\n';
+            terminal.textContent += '[✓ Planning complete]\n\n';
             loadTask();
+            break;
+
+        case 'worker_started':
+            terminal.textContent += `[🤖 ${data.data?.message || 'Starting worker...'}]\n`;
+            terminal.scrollTop = terminal.scrollHeight;
             break;
 
         case 'chunk_started':
@@ -194,7 +219,8 @@ function handleSSEEvent(data) {
             break;
 
         case 'chunk_reviewing':
-            terminal.textContent += '[Manager is reviewing...]\n';
+            terminal.textContent += '[⏳ Manager is reviewing code with OpenAI...]\n';
+            terminal.scrollTop = terminal.scrollHeight;
             break;
 
         case 'chunk_approved':

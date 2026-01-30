@@ -24,8 +24,13 @@ logger = logging.getLogger(__name__)
 class EventType(Enum):
     TASK_CREATED = "task_created"
     TASK_PLANNING = "task_planning"
+    MANAGER_THINKING = "manager_thinking"
+    MANAGER_RESPONSE = "manager_response"
     TASK_PLANNED = "task_planned"
+    RESEARCH_STARTED = "research_started"
+    RESEARCH_COMPLETED = "research_completed"
     CHUNK_STARTED = "chunk_started"
+    WORKER_STARTED = "worker_started"
     CHUNK_OUTPUT = "chunk_output"
     CHUNK_COMPLETED = "chunk_completed"
     CHUNK_REVIEWING = "chunk_reviewing"
@@ -166,15 +171,41 @@ class Orchestrator:
         guide = self._load_guide()
 
         # Get codebase context
+        self._emit(Event(
+            type=EventType.MANAGER_THINKING,
+            task_id=task_id,
+            data={"message": "Analyzing codebase context..."},
+        ))
         context = self._get_codebase_context()
 
         # Get plan from manager
+        self._emit(Event(
+            type=EventType.MANAGER_THINKING,
+            task_id=task_id,
+            data={"message": "Calling OpenAI to create execution plan..."},
+        ))
         plan = self.manager.plan_task(task.description, guide, context)
+
+        self._emit(Event(
+            type=EventType.MANAGER_RESPONSE,
+            task_id=task_id,
+            data={"message": f"Plan received: {len(plan.get('chunks', []))} chunks identified"},
+        ))
 
         # Handle research if needed
         if plan.get("research_needed"):
             for topic in plan["research_needed"]:
+                self._emit(Event(
+                    type=EventType.RESEARCH_STARTED,
+                    task_id=task_id,
+                    data={"topic": topic},
+                ))
                 research_result = self.manager.research(topic, task.description)
+                self._emit(Event(
+                    type=EventType.RESEARCH_COMPLETED,
+                    task_id=task_id,
+                    data={"topic": topic, "result": research_result.get("summary", "")},
+                ))
                 plan.setdefault("research_results", []).append(research_result)
 
         # Update task with plan
@@ -250,6 +281,13 @@ class Orchestrator:
             }
 
             # Execute worker
+            self._emit(Event(
+                type=EventType.WORKER_STARTED,
+                task_id=task_id,
+                chunk_id=chunk_id,
+                data={"message": f"Starting Claude CLI for: {chunk.title}"},
+            ))
+
             worker = Worker(self.workspace_path)
 
             output_buffer = []
