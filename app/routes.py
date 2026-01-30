@@ -1,6 +1,6 @@
 """Flask routes for the Svengalibot web UI."""
 
-from flask import Blueprint, render_template, request, jsonify, Response, current_app, g
+from flask import Blueprint, render_template, request, jsonify, Response, current_app
 import json
 import queue
 import threading
@@ -12,31 +12,35 @@ main_bp = Blueprint("main", __name__)
 _event_queues: dict[str, list[queue.Queue]] = {}
 _queues_lock = threading.Lock()
 
+# Global singleton for orchestrator (must persist across requests)
+_orchestrator = None
+_orchestrator_lock = threading.Lock()
+
 
 def get_state_manager():
-    """Get or create state manager."""
-    if "state_manager" not in g:
-        from app.state import StateManager
-        g.state_manager = StateManager(current_app.config["TASKS_DIR"])
-    return g.state_manager
+    """Get state manager instance."""
+    from app.state import StateManager
+    return StateManager(current_app.config["TASKS_DIR"])
 
 
 def get_orchestrator():
-    """Get or create orchestrator."""
-    if "orchestrator" not in g:
-        from app.orchestrator import create_orchestrator_from_config
-        g.orchestrator = create_orchestrator_from_config(
-            config_path=current_app.config["CONFIG_PATH"],
-            tasks_dir=current_app.config["TASKS_DIR"],
-            repos_dir=current_app.config["REPOS_DIR"],
-            guide_path=current_app.config["GUIDE_PATH"],
-            workspace_path=current_app.config["DATA_DIR"].parent,
-            prompts_dir=current_app.config["DATA_DIR"].parent / "prompts" / "manager",
-            vagrant_dir=current_app.config["DATA_DIR"].parent / "vagrant",
-        )
-        # Subscribe to events for SSE
-        g.orchestrator.subscribe(_broadcast_event)
-    return g.orchestrator
+    """Get or create global orchestrator singleton."""
+    global _orchestrator
+    with _orchestrator_lock:
+        if _orchestrator is None:
+            from app.orchestrator import create_orchestrator_from_config
+            _orchestrator = create_orchestrator_from_config(
+                config_path=current_app.config["CONFIG_PATH"],
+                tasks_dir=current_app.config["TASKS_DIR"],
+                repos_dir=current_app.config["REPOS_DIR"],
+                guide_path=current_app.config["GUIDE_PATH"],
+                workspace_path=current_app.config["DATA_DIR"].parent,
+                prompts_dir=current_app.config["DATA_DIR"].parent / "prompts" / "manager",
+                vagrant_dir=current_app.config["DATA_DIR"].parent / "vagrant",
+            )
+            # Subscribe to events for SSE
+            _orchestrator.subscribe(_broadcast_event)
+        return _orchestrator
 
 
 def _broadcast_event(event):
