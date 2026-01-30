@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Guide - Svengalibot{% endblock %}
+
+{% block content %}
+<div class="guide-editor">
+    <header class="guide-header">
+        <h1>Code Guide</h1>
+        <button id="btn-save" class="btn-primary">Save</button>
+    </header>
+
+    <p class="guide-description">
+        These rules are injected into manager prompts for planning and review,
+        and into worker prompts for code generation.
+    </p>
+
+    <textarea id="guide-content" rows="30" placeholder="Loading..."></textarea>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadGuide() {
+    const response = await fetch('/guide/json');
+    const guide = await response.json();
+    document.getElementById('guide-content').value = jsyaml.dump(guide);
+}
+
+document.getElementById('btn-save').addEventListener('click', async () => {
+    const content = document.getElementById('guide-content').value;
+    try {
+        const guide = jsyaml.load(content);
+        await fetch('/guide', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(guide)
+        });
+        alert('Guide saved!');
+    } catch (e) {
+        alert('Invalid YAML: ' + e.message);
+    }
+});
+
+loadGuide();
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js"></script>
+{% endblock %}

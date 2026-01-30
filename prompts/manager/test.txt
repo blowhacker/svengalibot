@@ -1,0 +1,55 @@
+You are a QA engineer. Design and evaluate functional tests for the implemented code.
+
+## Chunk Specification
+{chunk_spec}
+
+## Implementation Summary
+{implementation_summary}
+
+## Code Changes
+```diff
+{diff}
+```
+
+## Instructions
+
+Design tests to verify the implementation works correctly. Focus on:
+
+1. **Happy Path**: Does it work for normal inputs?
+2. **Edge Cases**: Does it handle boundary conditions?
+3. **Error Cases**: Does it fail gracefully?
+4. **Integration**: Does it work with existing code?
+
+## Output Format
+
+Respond with a JSON object:
+```json
+{
+  "test_plan": [
+    {
+      "name": "Test name",
+      "description": "What this test verifies",
+      "type": "unit|integration|e2e",
+      "steps": ["Step by step instructions"],
+      "expected_result": "What should happen",
+      "command": "Command to run if applicable"
+    }
+  ],
+  "automated_tests": [
+    {
+      "command": "pytest tests/test_foo.py -k test_bar",
+      "expected_outcome": "All tests pass"
+    }
+  ],
+  "manual_verification": [
+    {
+      "action": "What to do manually",
+      "expected": "What should be observed"
+    }
+  ],
+  "test_data_needed": ["Any test fixtures or data required"],
+  "environment_setup": ["Any setup required before testing"]
+}
+```
+
+Be practical. Focus on tests that verify real functionality.

@@ -1,0 +1,316 @@
+{% extends "base.html" %}
+
+{% block title %}Task {{ task_id }} - Svengalibot{% endblock %}
+
+{% block content %}
+<div class="task-detail">
+    <header class="task-header">
+        <h1>Task <span id="task-id">{{ task_id }}</span></h1>
+        <span id="task-status" class="status status-pending">pending</span>
+    </header>
+
+    <div class="controls">
+        <button id="btn-pause" class="btn-secondary">Pause</button>
+        <button id="btn-resume" class="btn-secondary" style="display:none">Resume</button>
+        <button id="btn-cancel" class="btn-danger">Cancel</button>
+        <button id="btn-approve" class="btn-primary" disabled>Approve Chunk</button>
+        <button id="btn-delete" class="btn-danger" style="display:none">Delete Task</button>
+    </div>
+
+    <section class="task-description">
+        <h2>Description</h2>
+        <p id="description"></p>
+    </section>
+
+    <section class="task-plan">
+        <h2>Plan</h2>
+        <div id="plan-analysis"></div>
+        <div id="chunks-list"></div>
+    </section>
+
+    <section class="live-output">
+        <h2>Live Output</h2>
+        <div id="terminal" class="terminal"></div>
+    </section>
+
+    <section class="diff-viewer">
+        <h2>Changes</h2>
+        <pre id="diff-output" class="diff"></pre>
+    </section>
+
+    <section class="review-section" style="display:none">
+        <h2>Review</h2>
+        <div id="review-content"></div>
+    </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const taskId = '{{ task_id }}';
+let currentTask = null;
+
+function updateUI(task) {
+    currentTask = task;
+
+    // Update status
+    const statusEl = document.getElementById('task-status');
+    statusEl.textContent = task.status;
+    statusEl.className = `status status-${task.status}`;
+
+    // Update description
+    document.getElementById('description').textContent = task.description;
+
+    // Update controls based on status
+    const btnPause = document.getElementById('btn-pause');
+    const btnResume = document.getElementById('btn-resume');
+    const btnApprove = document.getElementById('btn-approve');
+    const btnDelete = document.getElementById('btn-delete');
+
+    if (task.status === 'paused') {
+        btnPause.style.display = 'none';
+        btnResume.style.display = 'inline-block';
+    } else {
+        btnPause.style.display = 'inline-block';
+        btnResume.style.display = 'none';
+    }
+
+    // Enable approve button if awaiting review
+    const hasReviewingChunk = task.chunks?.some(c => c.status === 'review' || c.status === 'rejected');
+    btnApprove.disabled = !hasReviewingChunk;
+
+    // Show delete for finished tasks
+    if (['done', 'failed', 'cancelled'].includes(task.status)) {
+        btnDelete.style.display = 'inline-block';
+        btnPause.style.display = 'none';
+    }
+
+    // Update plan
+    if (task.plan?.analysis) {
+        document.getElementById('plan-analysis').innerHTML = `
+            <div class="plan-analysis">
+                <p>${task.plan.analysis}</p>
+                ${task.plan.risks?.length ? `
+                    <div class="risks">
+                        <strong>Risks:</strong>
+                        <ul>${task.plan.risks.map(r => `<li>${r}</li>`).join('')}</ul>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    }
+
+    // Update chunks
+    const chunksList = document.getElementById('chunks-list');
+    if (task.chunks && task.chunks.length > 0) {
+        chunksList.innerHTML = task.chunks.map((chunk, i) => `
+            <div class="chunk chunk-${chunk.status}" data-chunk-id="${chunk.id}">
+                <div class="chunk-header">
+                    <span class="chunk-num">#${i + 1}</span>
+                    <span class="chunk-title">${escapeHtml(chunk.title)}</span>
+                    <span class="chunk-status status status-${chunk.status}">${chunk.status}</span>
+                </div>
+                <div class="chunk-body">
+                    <p>${escapeHtml(chunk.description)}</p>
+                    ${chunk.acceptance_criteria?.length ? `
+                        <ul class="criteria">
+                            ${chunk.acceptance_criteria.map(c => `<li>${escapeHtml(c)}</li>`).join('')}
+                        </ul>
+                    ` : ''}
+                    <div class="chunk-attempts">
+                        ${chunk.attempts?.length ? `
+                            <small>${chunk.attempts.length} attempt(s)</small>
+                        ` : ''}
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    } else if (task.status === 'planning') {
+        chunksList.innerHTML = '<p class="empty-state">Planning in progress...</p>';
+    } else {
+        chunksList.innerHTML = '<p class="empty-state">No plan yet</p>';
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text || '';
+    return div.innerHTML;
+}
+
+async function loadTask() {
+    const response = await fetch(`/task/${taskId}/json`);
+    if (response.ok) {
+        const task = await response.json();
+        updateUI(task);
+    }
+}
+
+function handleSSEEvent(data) {
+    const terminal = document.getElementById('terminal');
+    const diffOutput = document.getElementById('diff-output');
+    const reviewSection = document.querySelector('.review-section');
+    const reviewContent = document.getElementById('review-content');
+
+    switch (data.type) {
+        case 'connected':
+            terminal.textContent += '[Connected to live stream]\n';
+            break;
+
+        case 'state':
+            if (data.task) updateUI(data.task);
+            break;
+
+        case 'heartbeat':
+            // Ignore heartbeats
+            break;
+
+        case 'task_planning':
+            terminal.textContent += '[Manager is planning the task...]\n';
+            break;
+
+        case 'task_planned':
+            terminal.textContent += '[Planning complete]\n';
+            loadTask();
+            break;
+
+        case 'chunk_started':
+            terminal.textContent += `\n[Starting chunk - attempt ${data.data?.attempt || 1}]\n`;
+            terminal.textContent += '─'.repeat(50) + '\n';
+            break;
+
+        case 'chunk_output':
+            if (data.data?.content) {
+                terminal.textContent += data.data.content;
+                terminal.scrollTop = terminal.scrollHeight;
+            }
+            break;
+
+        case 'chunk_completed':
+            terminal.textContent += '\n[Chunk execution completed]\n';
+            if (data.data?.diff) {
+                diffOutput.textContent = data.data.diff;
+            }
+            break;
+
+        case 'chunk_reviewing':
+            terminal.textContent += '[Manager is reviewing...]\n';
+            break;
+
+        case 'chunk_approved':
+            terminal.textContent += '[✓ Chunk approved]\n';
+            loadTask();
+            break;
+
+        case 'chunk_rejected':
+            terminal.textContent += '[✗ Chunk rejected - will retry]\n';
+            if (data.data?.review) {
+                reviewSection.style.display = 'block';
+                reviewContent.innerHTML = `
+                    <div class="review-result review-rejected">
+                        <h3>Feedback</h3>
+                        <p>${escapeHtml(data.data.review.feedback_for_retry || data.data.review.summary)}</p>
+                        ${data.data.review.issues?.length ? `
+                            <h4>Issues</h4>
+                            <ul>
+                                ${data.data.review.issues.map(i => `
+                                    <li class="issue-${i.severity}">${escapeHtml(i.description)}</li>
+                                `).join('')}
+                            </ul>
+                        ` : ''}
+                    </div>
+                `;
+            }
+            loadTask();
+            break;
+
+        case 'task_completed':
+            terminal.textContent += '\n[✓ Task completed successfully!]\n';
+            loadTask();
+            break;
+
+        case 'task_failed':
+            terminal.textContent += '\n[✗ Task failed]\n';
+            loadTask();
+            break;
+
+        case 'task_paused':
+            terminal.textContent += '\n[Task paused]\n';
+            loadTask();
+            break;
+
+        case 'task_cancelled':
+            terminal.textContent += '\n[Task cancelled]\n';
+            loadTask();
+            break;
+
+        case 'error':
+            terminal.textContent += `\n[ERROR: ${data.data?.error || 'Unknown error'}]\n`;
+            break;
+
+        default:
+            console.log('Unknown event:', data);
+    }
+}
+
+function connectSSE() {
+    const terminal = document.getElementById('terminal');
+    const evtSource = new EventSource(`/task/${taskId}/stream`);
+
+    evtSource.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            handleSSEEvent(data);
+        } catch (e) {
+            console.error('Failed to parse SSE event:', e);
+        }
+    };
+
+    evtSource.onerror = () => {
+        terminal.textContent += '\n[Connection lost. Reconnecting...]\n';
+        evtSource.close();
+        setTimeout(connectSSE, 3000);
+    };
+
+    return evtSource;
+}
+
+// Control buttons
+document.getElementById('btn-pause').addEventListener('click', async () => {
+    await fetch(`/task/${taskId}/pause`, {method: 'POST'});
+    loadTask();
+});
+
+document.getElementById('btn-resume').addEventListener('click', async () => {
+    await fetch(`/task/${taskId}/resume`, {method: 'POST'});
+    loadTask();
+});
+
+document.getElementById('btn-cancel').addEventListener('click', async () => {
+    if (confirm('Cancel this task?')) {
+        await fetch(`/task/${taskId}/cancel`, {method: 'POST'});
+        loadTask();
+    }
+});
+
+document.getElementById('btn-approve').addEventListener('click', async () => {
+    await fetch(`/task/${taskId}/approve`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({})
+    });
+    loadTask();
+});
+
+document.getElementById('btn-delete').addEventListener('click', async () => {
+    if (confirm('Delete this task permanently?')) {
+        await fetch(`/task/${taskId}`, {method: 'DELETE'});
+        window.location.href = '/';
+    }
+});
+
+// Initialize
+loadTask();
+connectSSE();
+</script>
+{% endblock %}

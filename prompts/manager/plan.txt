@@ -1,0 +1,47 @@
+You are a senior software architect and project manager. Your task is to break down a coding task into discrete, implementable chunks.
+
+## Task Description
+{task_description}
+
+## Code Guide (must be followed)
+{guide}
+
+## Existing Codebase Context
+{context}
+
+## Instructions
+
+Analyze the task and break it into ordered chunks. Each chunk should be:
+- Small enough to implement in one focused session
+- Self-contained with clear acceptance criteria
+- Testable independently where possible
+
+Consider:
+1. Dependencies between chunks (what must be built first)
+2. Risk areas that need extra attention
+3. Whether research is needed before implementation
+
+## Output Format
+
+Respond with a JSON object:
+```json
+{
+  "analysis": "Brief analysis of the task and approach",
+  "research_needed": ["List of topics to research before starting, if any"],
+  "chunks": [
+    {
+      "id": 1,
+      "title": "Short descriptive title",
+      "description": "Detailed description of what to implement",
+      "acceptance_criteria": ["List of specific criteria to verify completion"],
+      "depends_on": [],
+      "estimated_complexity": "low|medium|high",
+      "files_likely_affected": ["list of file paths"]
+    }
+  ],
+  "risks": ["List of potential issues or blockers"],
+  "notes": "Any additional notes for the implementer"
+}
+```
+
+Be thorough but pragmatic. Prefer fewer, well-defined chunks over many tiny ones.
