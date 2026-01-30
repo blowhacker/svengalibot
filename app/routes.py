@@ -198,6 +198,11 @@ def delete_task(task_id):
 @main_bp.route("/task/<task_id>/stream")
 def stream_task(task_id):
     """SSE endpoint for live task output."""
+    # Get initial state BEFORE entering generator (while still in request context)
+    from app.state import StateManager
+    state = StateManager(current_app.config["TASKS_DIR"])
+    task = state.get_task(task_id)
+    initial_state = task.to_dict() if task else None
 
     def generate():
         # Create a queue for this subscriber
@@ -212,11 +217,9 @@ def stream_task(task_id):
             # Send initial connection event
             yield f"data: {json.dumps({'type': 'connected', 'task_id': task_id})}\n\n"
 
-            # Send current task state
-            state = get_state_manager()
-            task = state.get_task(task_id)
-            if task:
-                yield f"data: {json.dumps({'type': 'state', 'task': task.to_dict()})}\n\n"
+            # Send current task state (captured before generator started)
+            if initial_state:
+                yield f"data: {json.dumps({'type': 'state', 'task': initial_state})}\n\n"
 
             # Stream events
             while True:
