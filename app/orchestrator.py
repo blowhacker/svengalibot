@@ -432,7 +432,7 @@ def create_orchestrator_from_config(
     state_manager = StateManager(tasks_dir)
 
     api_key = os.environ.get("OPENAI_API_KEY", config.get("manager", {}).get("api_key", ""))
-    model = config.get("manager", {}).get("model", "gpt-4o")
+    model = config.get("manager", {}).get("model", "gpt-4.1")
     manager = Manager(api_key=api_key, model=model, prompts_dir=prompts_dir)
 
     git_coordinator = GitCoordinator(
