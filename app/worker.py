@@ -1,11 +1,14 @@
 """Claude CLI worker for executing coding tasks."""
 
+import logging
 import subprocess
 import threading
 import queue
 from pathlib import Path
 from typing import Optional, Callable, Iterator
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -80,31 +83,41 @@ class Worker:
         """Execute a chunk locally using Claude CLI."""
         prompt = self._build_prompt(chunk_spec, context, guide, previous_feedback)
 
-        # Build command
-        cmd = ["claude", "--print", prompt]
+        # Build command - use -p for print mode with prompt via stdin
+        cmd = ["claude", "-p"]
+
+        logger.info(f"Executing Claude CLI in {self.workspace_dir}")
+        logger.debug(f"Prompt (first 200 chars): {prompt[:200]}...")
 
         try:
             # Get diff before
             diff_before = self._get_git_diff()
 
-            # Run Claude CLI
+            # Run Claude CLI with prompt via stdin
             process = subprocess.Popen(
                 cmd,
                 cwd=self.workspace_dir,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
             )
 
+            # Send prompt to stdin
+            process.stdin.write(prompt)
+            process.stdin.close()
+
             output_lines = []
             for line in iter(process.stdout.readline, ""):
                 output_lines.append(line)
+                logger.debug(f"Claude output: {line.rstrip()}")
                 if on_output:
                     on_output(line)
 
             process.wait()
             output = "".join(output_lines)
+            logger.info(f"Claude CLI exited with code {process.returncode}")
 
             # Get diff after
             diff_after = self._get_git_diff()
@@ -122,6 +135,8 @@ class Worker:
             )
 
         except Exception as e:
+            import traceback
+            logger.error(f"Worker execute_local failed: {e}\n{traceback.format_exc()}")
             return WorkerResult(
                 success=False,
                 output="",
