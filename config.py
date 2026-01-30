@@ -17,7 +17,7 @@ class Config:
 
     # OpenAI
     OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-    OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1")
+    OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.2")
 
     # Flask
     DEBUG = os.environ.get("FLASK_DEBUG", "0") == "1"

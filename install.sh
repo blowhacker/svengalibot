@@ -277,8 +277,8 @@ EOF
         cat > data/config.yaml << 'EOF'
 manager:
   provider: openai
-  model: gpt-4.1
-  # Alternative models: gpt-4.1, gpt-4-turbo
+  model: gpt-5.2
+  # Alternative models: gpt-5.2, gpt-4-turbo
 
 worker:
   type: claude-cli
