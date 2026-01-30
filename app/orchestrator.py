@@ -1,5 +1,6 @@
 """Orchestrator that coordinates the manager-worker workflow."""
 
+import logging
 import threading
 import queue
 import time
@@ -14,6 +15,10 @@ from app.manager import Manager
 from app.worker import Worker, WorkerResult
 from app.git_coordinator import GitCoordinator
 from app.vm_pool import VMPool, VMPoolConfig
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 
 class EventType(Enum):
@@ -127,6 +132,7 @@ class Orchestrator:
     def _process_task(self, task_id: str):
         """Process a task through the full workflow."""
         try:
+            logger.info(f"Starting task processing: {task_id}")
             # Planning phase
             self._plan_task(task_id)
 
@@ -138,6 +144,9 @@ class Orchestrator:
             self._execute_chunks(task_id)
 
         except Exception as e:
+            import traceback
+            error_msg = f"{str(e)}\n{traceback.format_exc()}"
+            logger.error(f"Task {task_id} failed: {error_msg}")
             self._emit(Event(
                 type=EventType.ERROR,
                 task_id=task_id,

@@ -1,10 +1,13 @@
 """ChatGPT manager integration for planning, review, and research."""
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Optional
 from openai import OpenAI
+
+logger = logging.getLogger(__name__)
 
 
 class Manager:
@@ -29,10 +32,13 @@ class Manager:
 
     def _extract_json(self, text: str) -> dict:
         """Extract JSON from response text."""
-        # Try to find JSON in code blocks
+        # Try to find JSON in code blocks first
         json_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
         if json_match:
-            return json.loads(json_match.group(1))
+            try:
+                return json.loads(json_match.group(1))
+            except json.JSONDecodeError:
+                pass  # Try other methods
 
         # Try to parse the whole text as JSON
         try:
@@ -40,12 +46,30 @@ class Manager:
         except json.JSONDecodeError:
             pass
 
-        # Try to find JSON object in text
-        json_match = re.search(r"\{[\s\S]*\}", text)
-        if json_match:
-            return json.loads(json_match.group(0))
+        # Try to find JSON object - match balanced braces
+        # Find the first { and try to parse from there
+        start = text.find('{')
+        if start != -1:
+            # Try parsing from each { to find valid JSON
+            depth = 0
+            for i, char in enumerate(text[start:], start):
+                if char == '{':
+                    depth += 1
+                elif char == '}':
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(text[start:i+1])
+                        except json.JSONDecodeError:
+                            # Try next opening brace
+                            next_start = text.find('{', start + 1)
+                            if next_start != -1:
+                                start = next_start
+                                depth = 0
+                            else:
+                                break
 
-        raise ValueError("Could not extract JSON from response")
+        raise ValueError(f"Could not extract JSON from response: {text[:200]}...")
 
     def _call_api(self, messages: list[dict], temperature: float = 1.0) -> str:
         """Make an API call to OpenAI."""
@@ -59,8 +83,11 @@ class Manager:
         if not self.model.startswith("o1"):
             kwargs["temperature"] = temperature
 
+        logger.info(f"Calling OpenAI API with model: {self.model}")
         response = self.client.chat.completions.create(**kwargs)
-        return response.choices[0].message.content
+        content = response.choices[0].message.content
+        logger.debug(f"OpenAI response (first 500 chars): {content[:500] if content else 'None'}")
+        return content
 
     def plan_task(
         self,
