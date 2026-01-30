@@ -21,6 +21,8 @@ class Config:
 
     # Flask
     DEBUG = os.environ.get("FLASK_DEBUG", "0") == "1"
+    HOST = os.environ.get("FLASK_HOST", "0.0.0.0")
+    PORT = int(os.environ.get("FLASK_PORT", "5000"))
 
 
 class DevelopmentConfig(Config):
