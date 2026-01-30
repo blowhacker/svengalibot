@@ -16,7 +16,7 @@ class Manager:
     def __init__(
         self,
         api_key: str,
-        model: str = "o1-preview",
+        model: str = "gpt-4o",
         prompts_dir: Optional[Path] = None,
     ):
         self.client = OpenAI(api_key=api_key)

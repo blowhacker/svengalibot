@@ -277,7 +277,7 @@ EOF
         cat > data/config.yaml << 'EOF'
 manager:
   provider: openai
-  model: o1-preview
+  model: gpt-4o
   # Alternative models: gpt-4o, gpt-4-turbo
 
 worker:
