@@ -29,12 +29,16 @@ def get_orchestrator():
     with _orchestrator_lock:
         if _orchestrator is None:
             from app.orchestrator import create_orchestrator_from_config
+            # Ensure workspace exists
+            workspace = current_app.config["WORKSPACE_DIR"]
+            workspace.mkdir(parents=True, exist_ok=True)
+
             _orchestrator = create_orchestrator_from_config(
                 config_path=current_app.config["CONFIG_PATH"],
                 tasks_dir=current_app.config["TASKS_DIR"],
                 repos_dir=current_app.config["REPOS_DIR"],
                 guide_path=current_app.config["GUIDE_PATH"],
-                workspace_path=current_app.config["DATA_DIR"].parent,
+                workspace_path=workspace,
                 prompts_dir=current_app.config["DATA_DIR"].parent / "prompts" / "manager",
                 vagrant_dir=current_app.config["DATA_DIR"].parent / "vagrant",
             )

@@ -14,6 +14,7 @@ class Config:
     REPOS_DIR = DATA_DIR / "repos"
     GUIDE_PATH = DATA_DIR / "guide.yaml"
     CONFIG_PATH = DATA_DIR / "config.yaml"
+    WORKSPACE_DIR = Path(os.environ.get("SVENGALI_WORKSPACE", Path.home() / "work" / "svengali-projects"))
 
     # OpenAI
     OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
