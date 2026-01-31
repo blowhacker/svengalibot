@@ -283,10 +283,42 @@ class Orchestrator:
 
         guide = self._load_guide(project)
         previous_feedback = None
+        attempt_history = []  # Track all attempts for deep analysis
 
         for attempt_num in range(self.max_attempts):
             if self._should_stop(task_key):
                 return False
+
+            # After 3 failed attempts, get detailed remediation from manager
+            if attempt_num >= 3 and attempt_history:
+                self._emit(Event(
+                    type=EventType.MANAGER_THINKING,
+                    task_id=task_id,
+                    chunk_id=chunk_id,
+                    data={
+                        "project": project.name,
+                        "message": f"Attempt {attempt_num + 1}: Getting detailed remediation plan from manager...",
+                    },
+                ))
+                previous_feedback = self.manager.get_detailed_remediation(
+                    chunk_spec={
+                        "title": chunk.title,
+                        "description": chunk.description,
+                        "acceptance_criteria": chunk.acceptance_criteria,
+                    },
+                    attempt_history=attempt_history,
+                    guide=guide,
+                )
+                self._emit(Event(
+                    type=EventType.MANAGER_RESPONSE,
+                    task_id=task_id,
+                    chunk_id=chunk_id,
+                    data={
+                        "project": project.name,
+                        "message": "Detailed remediation plan ready",
+                        "remediation": previous_feedback[:500] if previous_feedback else "",
+                    },
+                ))
 
             # Create attempt
             attempt = state.create_attempt(task_id, chunk_id)
@@ -312,7 +344,7 @@ class Orchestrator:
                 type=EventType.WORKER_STARTED,
                 task_id=task_id,
                 chunk_id=chunk_id,
-                data={"project": project.name, "message": f"Starting Claude CLI for: {chunk.title}", "workspace": str(project.path)},
+                data={"project": project.name, "message": f"Starting Claude CLI for: {chunk.title} (attempt {attempt_num + 1}/{self.max_attempts})", "workspace": str(project.path)},
             ))
 
             worker = Worker(project.path)
@@ -389,10 +421,21 @@ class Orchestrator:
                     type=EventType.CHUNK_REJECTED,
                     task_id=task_id,
                     chunk_id=chunk_id,
-                    data={"project": project.name, "review": review},
+                    data={"project": project.name, "review": review, "attempt": attempt_num + 1},
                 ))
 
-                previous_feedback = self.manager.summarize_feedback(review)
+                # Track attempt for deep analysis
+                attempt_history.append({
+                    "attempt": attempt_num + 1,
+                    "diff": result.diff[:5000] if result.diff else "",
+                    "summary": result.summary,
+                    "review": review,
+                    "issues": review.get("issues", []),
+                })
+
+                # For early attempts, use simple feedback; later attempts use deep analysis
+                if attempt_num < 3:
+                    previous_feedback = self.manager.summarize_feedback(review)
 
         # All attempts failed
         return False

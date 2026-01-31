@@ -202,6 +202,72 @@ class Manager:
 
         return "\n\n".join(parts) if parts else "Review rejected without specific feedback."
 
+    def get_detailed_remediation(
+        self,
+        chunk_spec: dict,
+        attempt_history: list[dict],
+        guide: dict,
+    ) -> str:
+        """Get detailed step-by-step remediation after multiple failures.
+
+        This is called after 3+ failed attempts to get very specific
+        instructions for what needs to change.
+        """
+        guide_text = self._format_guide(guide)
+        criteria_text = "\n".join(f"- {c}" for c in chunk_spec.get("acceptance_criteria", []))
+
+        # Format attempt history
+        history_text = ""
+        for attempt in attempt_history:
+            history_text += f"\n### Attempt {attempt['attempt']}\n"
+            if attempt.get('diff'):
+                # Truncate diff if too long
+                diff = attempt['diff']
+                if len(diff) > 2000:
+                    diff = diff[:2000] + "\n... (truncated)"
+                history_text += f"**Diff:**\n```\n{diff}\n```\n"
+            if attempt.get('issues'):
+                history_text += "**Issues found:**\n"
+                for issue in attempt['issues']:
+                    history_text += f"- [{issue.get('severity', 'issue')}] {issue.get('description', '')}\n"
+            if attempt.get('review', {}).get('feedback_for_retry'):
+                history_text += f"**Feedback:** {attempt['review']['feedback_for_retry']}\n"
+
+        prompt = f"""You are a senior software architect. A junior developer has tried to implement a task {len(attempt_history)} times and failed each time.
+
+## Task Specification
+**Title:** {chunk_spec.get('title', 'Untitled')}
+**Description:** {chunk_spec.get('description', '')}
+
+**Acceptance Criteria:**
+{criteria_text}
+
+## Code Guide
+{guide_text}
+
+## Attempt History
+{history_text}
+
+## Your Job
+Analyze the pattern of failures and provide VERY SPECIFIC, step-by-step instructions that will definitely succeed.
+
+Do NOT be vague. Instead of saying "handle errors properly", say exactly:
+- "In file X, line Y, add a try/except block around Z"
+- "Change function A to return Optional[B] instead of B"
+- "Add validation: if not param: raise ValueError('param required')"
+
+Provide:
+1. Root cause analysis (what pattern of mistakes is being repeated?)
+2. EXACT changes needed (file names, function names, specific code changes)
+3. A checklist the developer can follow step-by-step
+
+Be extremely specific and actionable. The next attempt MUST succeed."""
+
+        messages = [{"role": "user", "content": prompt}]
+        response = self._call_api(messages)
+
+        return response
+
     def _format_guide(self, guide: dict) -> str:
         """Format guide dict as readable text."""
         lines = []

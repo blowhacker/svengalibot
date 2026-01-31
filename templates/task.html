@@ -222,12 +222,20 @@ function handleSSEEvent(data) {
             break;
 
         case 'manager_thinking':
-            terminal.textContent += `[⏳ ${data.data?.message || 'Thinking...'}]\n`;
+            terminal.textContent += `\n[⏳ ${data.data?.message || 'Thinking...'}]\n`;
             terminal.scrollTop = terminal.scrollHeight;
             break;
 
         case 'manager_response':
             terminal.textContent += `[✓ ${data.data?.message || 'Response received'}]\n`;
+            // Show detailed remediation if provided
+            if (data.data?.remediation) {
+                terminal.textContent += '\n' + '─'.repeat(50) + '\n';
+                terminal.textContent += 'DETAILED REMEDIATION FROM MANAGER:\n';
+                terminal.textContent += '─'.repeat(50) + '\n';
+                terminal.textContent += data.data.remediation + '\n';
+                terminal.textContent += '─'.repeat(50) + '\n\n';
+            }
             terminal.scrollTop = terminal.scrollHeight;
             break;
 
@@ -284,7 +292,8 @@ function handleSSEEvent(data) {
             break;
 
         case 'chunk_rejected':
-            terminal.textContent += '\n[✗ CHUNK REJECTED]\n';
+            const attemptNum = data.data?.attempt || '?';
+            terminal.textContent += `\n[✗ CHUNK REJECTED - Attempt ${attemptNum}]\n`;
             if (data.data?.review) {
                 const review = data.data.review;
                 terminal.textContent += '─'.repeat(50) + '\n';

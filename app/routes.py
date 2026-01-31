@@ -67,12 +67,13 @@ def get_orchestrator(project_name: str = None):
             project_manager = ProjectManager(current_app.config["PROJECTS_DIR"])
 
             # Create orchestrator with project support
+            # Default to 6 attempts: 3 with simple feedback, then 3 with detailed remediation
             _orchestrator = Orchestrator(
                 project_manager=project_manager,
                 manager=manager,
                 guide_path=current_app.config["GUIDE_PATH"],
                 prompts_dir=prompts_dir,
-                max_attempts=config.get("worker", {}).get("max_attempts_per_chunk", 3),
+                max_attempts=config.get("worker", {}).get("max_attempts_per_chunk", 6),
             )
             # Subscribe to events for SSE
             _orchestrator.subscribe(_broadcast_event)
