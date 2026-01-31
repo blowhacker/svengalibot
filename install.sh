@@ -351,7 +351,7 @@ manager:
 worker:
   type: claude-cli
   vm_pool_size: 3
-  max_attempts_per_chunk: 3
+  max_attempts_per_chunk: 6
 
 vm:
   provider: vagrant

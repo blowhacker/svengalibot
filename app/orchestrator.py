@@ -58,7 +58,7 @@ class Orchestrator:
         manager: Manager,
         guide_path: Path,
         prompts_dir: Path,
-        max_attempts: int = 3,
+        max_attempts: int = 6,
     ):
         self.project_manager = project_manager
         self.manager = manager
