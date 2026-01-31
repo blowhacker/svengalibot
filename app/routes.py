@@ -503,3 +503,26 @@ def get_vm_status():
     except Exception:
         pass
     return jsonify({"error": "VM pool not configured"})
+
+
+# ============================================================
+# Backward-compatible routes for old URL format
+# These help users who have old browser tabs open
+# ============================================================
+
+@main_bp.route("/task/<task_id>")
+@main_bp.route("/task/<task_id>/json")
+@main_bp.route("/task/<task_id>/stream")
+def old_task_routes(task_id):
+    """Redirect old task URLs to project-based structure."""
+    return render_template("redirect.html",
+        message="This URL format is outdated. Tasks now live under projects.",
+        redirect_url="/"), 301
+
+
+@main_bp.route("/tasks")
+def old_tasks_list():
+    """Redirect old tasks list to projects."""
+    return render_template("redirect.html",
+        message="Tasks are now organized by project.",
+        redirect_url="/"), 301
