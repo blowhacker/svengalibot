@@ -107,6 +107,8 @@ button:disabled {
 .status-done, .status-completed { background: #3fb95033; color: var(--success); }
 .status-failed { background: #f8514933; color: var(--danger); }
 .status-paused { background: var(--bg-secondary); color: var(--text-muted); }
+.status-awaiting_approval { background: #d2992233; color: var(--warning); }
+.status-cancelled { background: var(--bg-secondary); color: var(--text-muted); }
 
 /* Forms */
 textarea {

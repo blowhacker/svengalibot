@@ -14,6 +14,7 @@
         <button id="btn-pause" class="btn-secondary">Pause</button>
         <button id="btn-resume" class="btn-secondary" style="display:none">Resume</button>
         <button id="btn-cancel" class="btn-danger">Cancel</button>
+        <button id="btn-retry" class="btn-secondary" style="display:none">Retry Chunk</button>
         <button id="btn-approve" class="btn-primary" disabled>Approve Chunk</button>
         <button id="btn-delete" class="btn-danger" style="display:none">Delete Task</button>
     </div>
@@ -68,9 +69,10 @@ function updateUI(task) {
     const btnPause = document.getElementById('btn-pause');
     const btnResume = document.getElementById('btn-resume');
     const btnApprove = document.getElementById('btn-approve');
+    const btnRetry = document.getElementById('btn-retry');
     const btnDelete = document.getElementById('btn-delete');
 
-    if (task.status === 'paused') {
+    if (task.status === 'paused' || task.status === 'awaiting_approval') {
         btnPause.style.display = 'none';
         btnResume.style.display = 'inline-block';
     } else {
@@ -78,9 +80,14 @@ function updateUI(task) {
         btnResume.style.display = 'none';
     }
 
-    // Enable approve button if awaiting review
+    // Enable approve button if awaiting review or has rejected chunk
     const hasReviewingChunk = task.chunks?.some(c => c.status === 'review' || c.status === 'rejected');
-    btnApprove.disabled = !hasReviewingChunk;
+    const awaitingApproval = task.status === 'awaiting_approval';
+    btnApprove.disabled = !(hasReviewingChunk || awaitingApproval);
+
+    // Show retry button if there's a failed/rejected chunk
+    const hasFailedChunk = task.chunks?.some(c => c.status === 'rejected' || c.status === 'failed');
+    btnRetry.style.display = (hasFailedChunk || awaitingApproval) ? 'inline-block' : 'none';
 
     // Show delete for finished tasks
     if (['done', 'failed', 'cancelled'].includes(task.status)) {
@@ -324,6 +331,15 @@ document.getElementById('btn-cancel').addEventListener('click', async () => {
 
 document.getElementById('btn-approve').addEventListener('click', async () => {
     await fetch(`${baseUrl}/approve`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({})
+    });
+    loadTask();
+});
+
+document.getElementById('btn-retry').addEventListener('click', async () => {
+    await fetch(`${baseUrl}/retry`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({})

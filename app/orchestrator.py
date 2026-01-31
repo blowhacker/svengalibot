@@ -255,13 +255,19 @@ class Orchestrator:
             success = self._execute_chunk(project, task_id, chunk.id)
 
             if not success:
+                # Instead of failing, pause for human review
                 task = state.get_task(task_id)
                 if task:
-                    state.update_task(task_id, status=TaskStatus.FAILED)
+                    state.update_task(task_id, status=TaskStatus.AWAITING_APPROVAL)
                     self._emit(Event(
-                        type=EventType.TASK_FAILED,
+                        type=EventType.TASK_PAUSED,
                         task_id=task_id,
-                        data={"project": project.name, "chunk_id": chunk.id},
+                        data={
+                            "project": project.name,
+                            "chunk_id": chunk.id,
+                            "reason": "max_attempts_reached",
+                            "message": f"Chunk '{chunk.id}' failed after {self.max_attempts} attempts. Please review and either approve, retry, or cancel.",
+                        },
                     ))
                 return
 
@@ -503,6 +509,48 @@ class Orchestrator:
                 chunk_id=chunk_id,
                 data={"project": project_name, "manual": True},
             ))
+
+            # If task was awaiting approval, resume execution
+            task = state.get_task(task_id)
+            if task and task.status == TaskStatus.AWAITING_APPROVAL:
+                self._continue_task(project, task_id)
+
+    def retry_chunk(self, project_name: str, task_id: str, chunk_id: str):
+        """Reset a chunk and retry execution."""
+        project = self.project_manager.get_project(project_name)
+        if not project:
+            return
+
+        state = self.project_manager.get_state_manager(project)
+        chunk = state.get_chunk(task_id, chunk_id)
+        if chunk:
+            # Reset chunk to pending (keeps attempt history for reference)
+            state.update_chunk(task_id, chunk_id, status=ChunkStatus.PENDING)
+            self._emit(Event(
+                type=EventType.CHUNK_STARTED,
+                task_id=task_id,
+                chunk_id=chunk_id,
+                data={"project": project_name, "retry": True, "attempt": len(chunk.attempts) + 1},
+            ))
+
+            # Resume task execution
+            self._continue_task(project, task_id)
+
+    def _continue_task(self, project: Project, task_id: str):
+        """Continue task execution from current state."""
+        task_key = self._task_key(project.name, task_id)
+        self._paused_tasks.discard(task_key)
+
+        state = self.project_manager.get_state_manager(project)
+        state.update_task(task_id, status=TaskStatus.EXECUTING)
+
+        thread = threading.Thread(
+            target=self._execute_chunks,
+            args=(project, task_id),
+            daemon=True,
+        )
+        self._task_threads[task_key] = thread
+        thread.start()
 
     def update_plan(self, project_name: str, task_id: str, new_plan: dict):
         """Update the plan for a task."""

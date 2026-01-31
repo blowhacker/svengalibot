@@ -320,10 +320,26 @@ class StateManager:
         return task
 
     def _save_task(self, task: Task):
-        """Save task to disk."""
+        """Save task to disk atomically."""
+        import tempfile
+        import os
+
         task.updated_at = datetime.utcnow().isoformat()
-        with open(self._meta_path(task.id), "w") as f:
-            json.dump(task.to_dict(), f, indent=2)
+        meta_path = self._meta_path(task.id)
+
+        # Write to temp file first, then rename (atomic on POSIX)
+        fd, tmp_path = tempfile.mkstemp(dir=meta_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(task.to_dict(), f, indent=2)
+            os.replace(tmp_path, meta_path)  # Atomic rename
+        except Exception:
+            # Clean up temp file on error
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def get_task(self, task_id: str) -> Optional[Task]:
         """Load a task by ID."""

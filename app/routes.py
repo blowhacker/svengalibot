@@ -329,6 +329,28 @@ def approve_chunk(project_name, task_id):
     return jsonify({"error": "No chunk to approve"}), 400
 
 
+@main_bp.route("/project/<project_name>/task/<task_id>/retry", methods=["POST"])
+def retry_chunk(project_name, task_id):
+    """Retry a failed/rejected chunk."""
+    data = request.get_json() or {}
+    chunk_id = data.get("chunk_id")
+
+    if not chunk_id:
+        # Get current chunk
+        state = get_state_manager_for_project(project_name)
+        if state:
+            task = state.get_task(task_id)
+            if task and task.current_chunk:
+                chunk_id = task.current_chunk
+
+    if chunk_id:
+        orchestrator = get_orchestrator()
+        orchestrator.retry_chunk(project_name, task_id, chunk_id)
+        return jsonify({"status": "retrying", "chunk_id": chunk_id})
+
+    return jsonify({"error": "No chunk to retry"}), 400
+
+
 @main_bp.route("/project/<project_name>/task/<task_id>/plan", methods=["PUT"])
 def update_plan(project_name, task_id):
     """Edit plan mid-execution."""
