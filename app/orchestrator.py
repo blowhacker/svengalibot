@@ -439,10 +439,10 @@ class Orchestrator:
 
                 # Give worker a chance to clarify before retry (soft rebuttal)
                 self._emit(Event(
-                    type=EventType.MANAGER_THINKING,
+                    type=EventType.CHUNK_OUTPUT,
                     task_id=task_id,
                     chunk_id=chunk_id,
-                    data={"project": project.name, "message": "Asking Claude for clarification..."},
+                    data={"project": project.name, "content": "\n[🤔 Asking Claude if there's context the reviewer missed...]\n"},
                 ))
 
                 worker_clarification = worker.get_clarification(chunk_spec, review)
