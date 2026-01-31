@@ -19,30 +19,60 @@ _orchestrator = None
 _orchestrator_lock = threading.Lock()
 
 
+def get_project_manager():
+    """Get project manager instance."""
+    from app.state import ProjectManager
+    return ProjectManager(current_app.config["PROJECTS_DIR"])
+
+
+def get_state_manager_for_project(project_name: str):
+    """Get state manager scoped to a project."""
+    from app.state import ProjectManager
+    pm = ProjectManager(current_app.config["PROJECTS_DIR"])
+    project = pm.get_project(project_name)
+    if not project:
+        return None
+    return pm.get_state_manager(project)
+
+
 def get_state_manager():
-    """Get state manager instance."""
+    """Get state manager instance (legacy - uses default tasks dir)."""
     from app.state import StateManager
     return StateManager(current_app.config["TASKS_DIR"])
 
 
-def get_orchestrator():
-    """Get or create global orchestrator singleton."""
+def get_orchestrator(project_name: str = None):
+    """Get or create orchestrator for a project."""
     global _orchestrator
     with _orchestrator_lock:
         if _orchestrator is None:
-            from app.orchestrator import create_orchestrator_from_config
-            # Ensure workspace exists
-            workspace = current_app.config["WORKSPACE_DIR"]
-            workspace.mkdir(parents=True, exist_ok=True)
+            from app.orchestrator import Orchestrator
+            from app.state import ProjectManager
+            from app.manager import Manager
+            from app.git_coordinator import GitCoordinator
+            import os
 
-            _orchestrator = create_orchestrator_from_config(
-                config_path=current_app.config["CONFIG_PATH"],
-                tasks_dir=current_app.config["TASKS_DIR"],
-                repos_dir=current_app.config["REPOS_DIR"],
+            # Load config
+            config_path = current_app.config["CONFIG_PATH"]
+            with open(config_path) as f:
+                config = yaml.safe_load(f)
+
+            # Create manager
+            api_key = os.environ.get("OPENAI_API_KEY", config.get("manager", {}).get("api_key", ""))
+            model = config.get("manager", {}).get("model", "gpt-5.2")
+            prompts_dir = current_app.config["DATA_DIR"].parent / "prompts" / "manager"
+            manager = Manager(api_key=api_key, model=model, prompts_dir=prompts_dir)
+
+            # Create project manager
+            project_manager = ProjectManager(current_app.config["PROJECTS_DIR"])
+
+            # Create orchestrator with project support
+            _orchestrator = Orchestrator(
+                project_manager=project_manager,
+                manager=manager,
                 guide_path=current_app.config["GUIDE_PATH"],
-                workspace_path=workspace,
-                prompts_dir=current_app.config["DATA_DIR"].parent / "prompts" / "manager",
-                vagrant_dir=current_app.config["DATA_DIR"].parent / "vagrant",
+                prompts_dir=prompts_dir,
+                max_attempts=config.get("worker", {}).get("max_attempts_per_chunk", 3),
             )
             # Subscribe to events for SSE
             _orchestrator.subscribe(_broadcast_event)
@@ -52,23 +82,27 @@ def get_orchestrator():
 def _broadcast_event(event):
     """Broadcast an event to all SSE subscribers for a task."""
     task_id = event.task_id
+    project_name = event.data.get("project") if event.data else None
+    stream_key = f"{project_name}:{task_id}" if project_name else task_id
+
     event_data = {
         "type": event.type.value,
         "task_id": task_id,
+        "project": project_name,
         "chunk_id": event.chunk_id,
         "data": event.data,
     }
 
     with _queues_lock:
         # Store in buffer for late-joining clients
-        if task_id not in _event_buffer:
-            _event_buffer[task_id] = []
-        _event_buffer[task_id].append(event_data)
+        if stream_key not in _event_buffer:
+            _event_buffer[stream_key] = []
+        _event_buffer[stream_key].append(event_data)
         # Trim buffer if too large
-        if len(_event_buffer[task_id]) > MAX_BUFFERED_EVENTS:
-            _event_buffer[task_id] = _event_buffer[task_id][-MAX_BUFFERED_EVENTS:]
-        if task_id in _event_queues:
-            for q in _event_queues[task_id]:
+        if len(_event_buffer[stream_key]) > MAX_BUFFERED_EVENTS:
+            _event_buffer[stream_key] = _event_buffer[stream_key][-MAX_BUFFERED_EVENTS:]
+        if stream_key in _event_queues:
+            for q in _event_queues[stream_key]:
                 try:
                     q.put_nowait(event_data)
                 except queue.Full:
@@ -78,58 +112,162 @@ def _broadcast_event(event):
 # Dashboard
 @main_bp.route("/")
 def index():
-    """Dashboard with task list and status."""
+    """Dashboard with project and task list."""
     return render_template("index.html")
 
 
+# Project CRUD
+@main_bp.route("/projects")
+def list_projects():
+    """List all projects."""
+    pm = get_project_manager()
+    projects = pm.list_projects()
+    return jsonify({
+        "projects": [
+            {
+                "name": p.name,
+                "path": str(p.path),
+                "created_at": p.created_at,
+                "description": p.description,
+            }
+            for p in projects
+        ]
+    })
+
+
+@main_bp.route("/project", methods=["POST"])
+def create_project():
+    """Create a new project."""
+    data = request.get_json()
+    name = data.get("name", "").strip()
+    description = data.get("description", "")
+
+    if not name:
+        return jsonify({"error": "Project name required"}), 400
+
+    pm = get_project_manager()
+    project = pm.create_project(name, description)
+
+    return jsonify({
+        "name": project.name,
+        "path": str(project.path),
+        "created_at": project.created_at,
+    })
+
+
+@main_bp.route("/project/<project_name>")
+def get_project(project_name):
+    """Get project details page."""
+    pm = get_project_manager()
+    project = pm.get_project(project_name)
+    if not project:
+        return "Project not found", 404
+    return render_template("project.html", project_name=project_name)
+
+
+@main_bp.route("/project/<project_name>/json")
+def get_project_json(project_name):
+    """Get project data as JSON."""
+    pm = get_project_manager()
+    project = pm.get_project(project_name)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+
+    # Get tasks for this project
+    state = pm.get_state_manager(project)
+    tasks = state.list_tasks()
+
+    return jsonify({
+        **project.to_dict(),
+        "tasks": [
+            {
+                "id": t.id,
+                "status": t.status.value,
+                "description": t.description[:200],
+                "completed_chunks": t.completed_chunks,
+                "total_chunks": t.total_chunks,
+                "created_at": t.created_at,
+            }
+            for t in tasks
+        ]
+    })
+
+
+@main_bp.route("/project/<project_name>", methods=["DELETE"])
+def delete_project(project_name):
+    """Delete a project (keeps files, removes .svengali)."""
+    data = request.get_json() or {}
+    delete_files = data.get("delete_files", False)
+
+    pm = get_project_manager()
+    if pm.delete_project(project_name, delete_files=delete_files):
+        return jsonify({"status": "deleted"})
+    return jsonify({"error": "Project not found"}), 404
+
+
 # Task CRUD
-@main_bp.route("/task", methods=["POST"])
-def create_task():
-    """Create a new task."""
+@main_bp.route("/project/<project_name>/task", methods=["POST"])
+def create_task(project_name):
+    """Create a new task within a project."""
     data = request.get_json()
     description = data.get("description", "")
 
     if not description:
         return jsonify({"error": "Description required"}), 400
 
+    pm = get_project_manager()
+    project = pm.get_project(project_name)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+
     orchestrator = get_orchestrator()
-    task = orchestrator.start_task(description)
+    task = orchestrator.start_task(project, description)
 
     return jsonify({
         "id": task.id,
+        "project": project_name,
         "status": task.status.value,
     })
 
 
-@main_bp.route("/task/<task_id>")
-def get_task(task_id):
+@main_bp.route("/project/<project_name>/task/<task_id>")
+def get_task(project_name, task_id):
     """Task detail view."""
-    state = get_state_manager()
+    state = get_state_manager_for_project(project_name)
+    if not state:
+        return "Project not found", 404
     task = state.get_task(task_id)
     if not task:
         return "Task not found", 404
-    return render_template("task.html", task_id=task_id)
+    return render_template("task.html", project_name=project_name, task_id=task_id)
 
 
-@main_bp.route("/task/<task_id>/json")
-def get_task_json(task_id):
+@main_bp.route("/project/<project_name>/task/<task_id>/json")
+def get_task_json(project_name, task_id):
     """Get task data as JSON."""
-    state = get_state_manager()
+    state = get_state_manager_for_project(project_name)
+    if not state:
+        return jsonify({"error": "Project not found"}), 404
     task = state.get_task(task_id)
 
     if not task:
         return jsonify({"error": "Task not found"}), 404
 
-    return jsonify(task.to_dict())
+    result = task.to_dict()
+    result["project"] = project_name
+    return jsonify(result)
 
 
-@main_bp.route("/tasks")
-def list_tasks():
-    """List all tasks as JSON."""
-    state = get_state_manager()
+@main_bp.route("/project/<project_name>/tasks")
+def list_tasks(project_name):
+    """List all tasks for a project as JSON."""
+    state = get_state_manager_for_project(project_name)
+    if not state:
+        return jsonify({"error": "Project not found"}), 404
     tasks = state.list_tasks()
 
     return jsonify({
+        "project": project_name,
         "tasks": [
             {
                 "id": t.id,
@@ -145,98 +283,108 @@ def list_tasks():
 
 
 # Task control
-@main_bp.route("/task/<task_id>/pause", methods=["POST"])
-def pause_task(task_id):
+@main_bp.route("/project/<project_name>/task/<task_id>/pause", methods=["POST"])
+def pause_task(project_name, task_id):
     """Pause a running task."""
     orchestrator = get_orchestrator()
-    orchestrator.pause_task(task_id)
+    orchestrator.pause_task(project_name, task_id)
     return jsonify({"status": "paused"})
 
 
-@main_bp.route("/task/<task_id>/resume", methods=["POST"])
-def resume_task(task_id):
+@main_bp.route("/project/<project_name>/task/<task_id>/resume", methods=["POST"])
+def resume_task(project_name, task_id):
     """Resume a paused task."""
     orchestrator = get_orchestrator()
-    orchestrator.resume_task(task_id)
+    orchestrator.resume_task(project_name, task_id)
     return jsonify({"status": "resumed"})
 
 
-@main_bp.route("/task/<task_id>/cancel", methods=["POST"])
-def cancel_task(task_id):
+@main_bp.route("/project/<project_name>/task/<task_id>/cancel", methods=["POST"])
+def cancel_task(project_name, task_id):
     """Cancel a task."""
     orchestrator = get_orchestrator()
-    orchestrator.cancel_task(task_id)
+    orchestrator.cancel_task(project_name, task_id)
     return jsonify({"status": "cancelled"})
 
 
-@main_bp.route("/task/<task_id>/approve", methods=["POST"])
-def approve_chunk(task_id):
+@main_bp.route("/project/<project_name>/task/<task_id>/approve", methods=["POST"])
+def approve_chunk(project_name, task_id):
     """Manually approve current chunk."""
     data = request.get_json() or {}
     chunk_id = data.get("chunk_id")
 
     if not chunk_id:
         # Get current chunk
-        state = get_state_manager()
-        task = state.get_task(task_id)
-        if task and task.current_chunk:
-            chunk_id = task.current_chunk
+        state = get_state_manager_for_project(project_name)
+        if state:
+            task = state.get_task(task_id)
+            if task and task.current_chunk:
+                chunk_id = task.current_chunk
 
     if chunk_id:
         orchestrator = get_orchestrator()
-        orchestrator.approve_chunk(task_id, chunk_id)
+        orchestrator.approve_chunk(project_name, task_id, chunk_id)
         return jsonify({"status": "approved", "chunk_id": chunk_id})
 
     return jsonify({"error": "No chunk to approve"}), 400
 
 
-@main_bp.route("/task/<task_id>/plan", methods=["PUT"])
-def update_plan(task_id):
+@main_bp.route("/project/<project_name>/task/<task_id>/plan", methods=["PUT"])
+def update_plan(project_name, task_id):
     """Edit plan mid-execution."""
     data = request.get_json()
     if not data:
         return jsonify({"error": "Plan data required"}), 400
 
     orchestrator = get_orchestrator()
-    orchestrator.update_plan(task_id, data)
+    orchestrator.update_plan(project_name, task_id, data)
     return jsonify({"status": "updated"})
 
 
-@main_bp.route("/task/<task_id>", methods=["DELETE"])
-def delete_task(task_id):
+@main_bp.route("/project/<project_name>/task/<task_id>", methods=["DELETE"])
+def delete_task(project_name, task_id):
     """Delete a task."""
-    state = get_state_manager()
+    state = get_state_manager_for_project(project_name)
+    if not state:
+        return jsonify({"error": "Project not found"}), 404
     if state.delete_task(task_id):
         return jsonify({"status": "deleted"})
     return jsonify({"error": "Task not found"}), 404
 
 
 # SSE streaming
-@main_bp.route("/task/<task_id>/stream")
-def stream_task(task_id):
+@main_bp.route("/project/<project_name>/task/<task_id>/stream")
+def stream_task(project_name, task_id):
     """SSE endpoint for live task output."""
     # Get initial state BEFORE entering generator (while still in request context)
-    from app.state import StateManager
-    state = StateManager(current_app.config["TASKS_DIR"])
-    task = state.get_task(task_id)
-    initial_state = task.to_dict() if task else None
+    from app.state import ProjectManager
+    pm = ProjectManager(current_app.config["PROJECTS_DIR"])
+    project = pm.get_project(project_name)
+    initial_state = None
+    if project:
+        state = pm.get_state_manager(project)
+        task = state.get_task(task_id)
+        initial_state = task.to_dict() if task else None
+        if initial_state:
+            initial_state["project"] = project_name
 
-    # Get buffered events before entering generator
+    # Get buffered events before entering generator (keyed by project:task)
+    stream_key = f"{project_name}:{task_id}"
     with _queues_lock:
-        buffered = list(_event_buffer.get(task_id, []))
+        buffered = list(_event_buffer.get(stream_key, []))
 
     def generate():
         # Create a queue for this subscriber
         q = queue.Queue(maxsize=100)
 
         with _queues_lock:
-            if task_id not in _event_queues:
-                _event_queues[task_id] = []
-            _event_queues[task_id].append(q)
+            if stream_key not in _event_queues:
+                _event_queues[stream_key] = []
+            _event_queues[stream_key].append(q)
 
         try:
             # Send initial connection event
-            yield f"data: {json.dumps({'type': 'connected', 'task_id': task_id})}\n\n"
+            yield f"data: {json.dumps({'type': 'connected', 'project': project_name, 'task_id': task_id})}\n\n"
 
             # Send current task state (captured before generator started)
             if initial_state:
@@ -258,13 +406,13 @@ def stream_task(task_id):
         finally:
             # Clean up queue
             with _queues_lock:
-                if task_id in _event_queues:
+                if stream_key in _event_queues:
                     try:
-                        _event_queues[task_id].remove(q)
+                        _event_queues[stream_key].remove(q)
                     except ValueError:
                         pass
-                    if not _event_queues[task_id]:
-                        del _event_queues[task_id]
+                    if not _event_queues[stream_key]:
+                        del _event_queues[stream_key]
 
     return Response(
         generate(),

@@ -10,11 +10,12 @@ class Config:
 
     # Paths
     DATA_DIR = DATA_DIR
-    TASKS_DIR = DATA_DIR / "tasks"
+    TASKS_DIR = DATA_DIR / "tasks"  # Legacy, kept for compatibility
     REPOS_DIR = DATA_DIR / "repos"
-    GUIDE_PATH = DATA_DIR / "guide.yaml"
+    GUIDE_PATH = DATA_DIR / "guide.yaml"  # Global default guide
     CONFIG_PATH = DATA_DIR / "config.yaml"
-    WORKSPACE_DIR = Path(os.environ.get("SVENGALI_WORKSPACE", Path.home() / "work" / "svengali-projects"))
+    # Projects directory - where all projects live
+    PROJECTS_DIR = Path(os.environ.get("SVENGALI_PROJECTS", Path.home() / "work" / "svengali-projects"))
 
     # OpenAI
     OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")

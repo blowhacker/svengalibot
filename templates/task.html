@@ -5,6 +5,7 @@
 {% block content %}
 <div class="task-detail">
     <header class="task-header">
+        <a href="/project/{{ project_name }}" class="back-link">&larr; {{ project_name }}</a>
         <h1>Task <span id="task-id">{{ task_id }}</span></h1>
         <span id="task-status" class="status status-pending">pending</span>
     </header>
@@ -47,7 +48,9 @@
 
 {% block scripts %}
 <script>
+const projectName = '{{ project_name }}';
 const taskId = '{{ task_id }}';
+const baseUrl = `/project/${projectName}/task/${taskId}`;
 let currentTask = null;
 
 function updateUI(task) {
@@ -139,7 +142,7 @@ function escapeHtml(text) {
 }
 
 async function loadTask() {
-    const response = await fetch(`/task/${taskId}/json`);
+    const response = await fetch(`${baseUrl}/json`);
     if (response.ok) {
         const task = await response.json();
         updateUI(task);
@@ -281,7 +284,7 @@ function handleSSEEvent(data) {
 
 function connectSSE() {
     const terminal = document.getElementById('terminal');
-    const evtSource = new EventSource(`/task/${taskId}/stream`);
+    const evtSource = new EventSource(`${baseUrl}/stream`);
 
     evtSource.onmessage = (event) => {
         try {
@@ -303,24 +306,24 @@ function connectSSE() {
 
 // Control buttons
 document.getElementById('btn-pause').addEventListener('click', async () => {
-    await fetch(`/task/${taskId}/pause`, {method: 'POST'});
+    await fetch(`${baseUrl}/pause`, {method: 'POST'});
     loadTask();
 });
 
 document.getElementById('btn-resume').addEventListener('click', async () => {
-    await fetch(`/task/${taskId}/resume`, {method: 'POST'});
+    await fetch(`${baseUrl}/resume`, {method: 'POST'});
     loadTask();
 });
 
 document.getElementById('btn-cancel').addEventListener('click', async () => {
     if (confirm('Cancel this task?')) {
-        await fetch(`/task/${taskId}/cancel`, {method: 'POST'});
+        await fetch(`${baseUrl}/cancel`, {method: 'POST'});
         loadTask();
     }
 });
 
 document.getElementById('btn-approve').addEventListener('click', async () => {
-    await fetch(`/task/${taskId}/approve`, {
+    await fetch(`${baseUrl}/approve`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({})
@@ -330,8 +333,8 @@ document.getElementById('btn-approve').addEventListener('click', async () => {
 
 document.getElementById('btn-delete').addEventListener('click', async () => {
     if (confirm('Delete this task permanently?')) {
-        await fetch(`/task/${taskId}`, {method: 'DELETE'});
-        window.location.href = '/';
+        await fetch(`${baseUrl}`, {method: 'DELETE'});
+        window.location.href = `/project/${projectName}`;
     }
 });
 

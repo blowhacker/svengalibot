@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block title %}{{ project_name }} - Svengalibot{% endblock %}
+
+{% block content %}
+<div class="project-detail">
+    <header class="project-header">
+        <a href="/" class="back-link">&larr; All Projects</a>
+        <h1 id="project-name">{{ project_name }}</h1>
+        <p id="project-path" class="project-path"></p>
+    </header>
+
+    <section class="new-task">
+        <h2>New Task</h2>
+        <form id="new-task-form">
+            <textarea id="task-description" placeholder="Describe what you want to build or change..." rows="4"></textarea>
+            <button type="submit">Create Task</button>
+        </form>
+    </section>
+
+    <section class="task-list">
+        <h2>Tasks</h2>
+        <div id="tasks-container">
+            <p class="empty-state">No tasks yet. Create one above.</p>
+        </div>
+    </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const projectName = '{{ project_name }}';
+
+document.getElementById('new-task-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const description = document.getElementById('task-description').value;
+    if (!description.trim()) return;
+
+    const response = await fetch(`/project/${projectName}/task`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({description})
+    });
+
+    if (response.ok) {
+        const data = await response.json();
+        window.location.href = `/project/${projectName}/task/${data.id}`;
+    } else {
+        const error = await response.json();
+        alert(error.error || 'Failed to create task');
+    }
+});
+
+async function loadProject() {
+    const response = await fetch(`/project/${projectName}/json`);
+    if (!response.ok) {
+        alert('Project not found');
+        window.location.href = '/';
+        return;
+    }
+
+    const data = await response.json();
+
+    document.getElementById('project-path').textContent = data.path;
+
+    const container = document.getElementById('tasks-container');
+
+    if (!data.tasks || data.tasks.length === 0) {
+        container.innerHTML = '<p class="empty-state">No tasks yet. Create one above.</p>';
+        return;
+    }
+
+    container.innerHTML = data.tasks.map(task => `
+        <a href="/project/${projectName}/task/${task.id}" class="task-card">
+            <span class="status status-${task.status}">${task.status}</span>
+            <span class="description">${escapeHtml(task.description.substring(0, 100))}${task.description.length > 100 ? '...' : ''}</span>
+            <span class="progress">${task.completed_chunks || 0}/${task.total_chunks || 0} chunks</span>
+        </a>
+    `).join('');
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text || '';
+    return div.innerHTML;
+}
+
+loadProject();
+</script>
+{% endblock %}

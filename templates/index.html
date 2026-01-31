@@ -4,61 +4,86 @@
 
 {% block content %}
 <div class="dashboard">
-    <section class="new-task">
-        <h2>New Task</h2>
-        <form id="new-task-form">
-            <textarea id="task-description" placeholder="Describe what you want to build..." rows="4"></textarea>
-            <button type="submit">Create Task</button>
-        </form>
-    </section>
-
-    <section class="task-list">
-        <h2>Tasks</h2>
-        <div id="tasks-container">
-            <p class="empty-state">No tasks yet. Create one above.</p>
+    <section class="projects-section">
+        <div class="section-header">
+            <h2>Projects</h2>
+            <button id="btn-new-project" class="btn-primary">+ New Project</button>
+        </div>
+        <div id="projects-container">
+            <p class="empty-state">No projects yet. Create one to get started.</p>
         </div>
     </section>
+
+    <div id="new-project-modal" class="modal" style="display:none">
+        <div class="modal-content">
+            <h3>Create New Project</h3>
+            <form id="new-project-form">
+                <input type="text" id="project-name" placeholder="Project name (e.g., my-web-app)" required>
+                <textarea id="project-description" placeholder="Brief description (optional)" rows="2"></textarea>
+                <div class="modal-actions">
+                    <button type="button" id="btn-cancel-project" class="btn-secondary">Cancel</button>
+                    <button type="submit" class="btn-primary">Create</button>
+                </div>
+            </form>
+        </div>
+    </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-document.getElementById('new-task-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const description = document.getElementById('task-description').value;
-    if (!description.trim()) return;
+const modal = document.getElementById('new-project-modal');
 
-    const response = await fetch('/task', {
+document.getElementById('btn-new-project').addEventListener('click', () => {
+    modal.style.display = 'flex';
+});
+
+document.getElementById('btn-cancel-project').addEventListener('click', () => {
+    modal.style.display = 'none';
+});
+
+document.getElementById('new-project-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('project-name').value;
+    const description = document.getElementById('project-description').value;
+
+    const response = await fetch('/project', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({description})
+        body: JSON.stringify({name, description})
     });
 
     if (response.ok) {
         const data = await response.json();
-        window.location.href = '/task/' + data.id;
+        window.location.href = '/project/' + data.name;
+    } else {
+        const error = await response.json();
+        alert(error.error || 'Failed to create project');
     }
 });
 
-async function loadTasks() {
-    const response = await fetch('/tasks');
+async function loadProjects() {
+    const response = await fetch('/projects');
     const data = await response.json();
-    const container = document.getElementById('tasks-container');
+    const container = document.getElementById('projects-container');
 
-    if (data.tasks.length === 0) {
-        container.innerHTML = '<p class="empty-state">No tasks yet. Create one above.</p>';
+    if (data.projects.length === 0) {
+        container.innerHTML = '<p class="empty-state">No projects yet. Create one to get started.</p>';
         return;
     }
 
-    container.innerHTML = data.tasks.map(task => `
-        <a href="/task/${task.id}" class="task-card">
-            <span class="status status-${task.status}">${task.status}</span>
-            <span class="description">${task.description.substring(0, 100)}...</span>
-            <span class="progress">${task.completed_chunks || 0}/${task.total_chunks || 0} chunks</span>
+    container.innerHTML = data.projects.map(project => `
+        <a href="/project/${project.name}" class="project-card">
+            <div class="project-info">
+                <span class="project-name">${project.name}</span>
+                <span class="project-path">${project.path}</span>
+                ${project.description ? `<span class="project-desc">${project.description}</span>` : ''}
+            </div>
+            <span class="project-date">${new Date(project.created_at).toLocaleDateString()}</span>
         </a>
     `).join('');
 }
 
-loadTasks();
+loadProjects();
 </script>
 {% endblock %}

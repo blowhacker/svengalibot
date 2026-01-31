@@ -1,4 +1,4 @@
-"""File-based state management for tasks and chunks."""
+"""File-based state management for projects, tasks and chunks."""
 
 import json
 import logging
@@ -10,6 +10,8 @@ from typing import Optional
 from dataclasses import dataclass, field, asdict
 
 logger = logging.getLogger(__name__)
+
+SVENGALI_DIR = ".svengali"
 
 
 class TaskStatus(Enum):
@@ -120,6 +122,167 @@ class Task:
     @property
     def total_chunks(self) -> int:
         return len(self.chunks)
+
+
+@dataclass
+class Project:
+    """A project represents a codebase that tasks operate on."""
+    name: str
+    path: Path
+    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    description: str = ""
+
+    def to_dict(self):
+        return {
+            "name": self.name,
+            "path": str(self.path),
+            "created_at": self.created_at,
+            "description": self.description,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Project":
+        data = data.copy()
+        data["path"] = Path(data["path"])
+        return cls(**data)
+
+    @property
+    def svengali_dir(self) -> Path:
+        return self.path / SVENGALI_DIR
+
+    @property
+    def tasks_dir(self) -> Path:
+        return self.svengali_dir / "tasks"
+
+    @property
+    def guide_path(self) -> Path:
+        return self.svengali_dir / "guide.yaml"
+
+
+class ProjectManager:
+    """Manages projects in the projects base directory."""
+
+    def __init__(self, projects_base_dir: Path):
+        self.base_dir = Path(projects_base_dir)
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+
+    def create_project(self, name: str, description: str = "") -> Project:
+        """Create a new project with initialized workspace."""
+        import subprocess
+
+        # Sanitize name for filesystem
+        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+        project_path = self.base_dir / safe_name
+
+        if project_path.exists():
+            # Return existing project
+            return self.get_project(safe_name)
+
+        # Create directory structure
+        project_path.mkdir(parents=True, exist_ok=True)
+        svengali_dir = project_path / SVENGALI_DIR
+        svengali_dir.mkdir(exist_ok=True)
+        (svengali_dir / "tasks").mkdir(exist_ok=True)
+
+        # Create project metadata
+        project = Project(
+            name=safe_name,
+            path=project_path,
+            description=description,
+        )
+
+        meta_path = svengali_dir / "project.json"
+        with open(meta_path, "w") as f:
+            json.dump(project.to_dict(), f, indent=2)
+
+        # Initialize git repo
+        git_dir = project_path / ".git"
+        if not git_dir.exists():
+            subprocess.run(["git", "init"], cwd=project_path, capture_output=True)
+            subprocess.run(
+                ["git", "config", "user.email", "svengalibot@local"],
+                cwd=project_path, capture_output=True
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Svengalibot"],
+                cwd=project_path, capture_output=True
+            )
+            # Create initial files
+            readme = project_path / "README.md"
+            readme.write_text(f"# {name}\n\n{description}\n\nManaged by Svengalibot\n")
+            # Add .svengali to gitignore (optional - could also track it)
+            gitignore = project_path / ".gitignore"
+            gitignore.write_text("# Svengalibot state (uncomment to track)\n# .svengali/\n")
+            subprocess.run(["git", "add", "."], cwd=project_path, capture_output=True)
+            subprocess.run(
+                ["git", "commit", "-m", "Initial commit"],
+                cwd=project_path, capture_output=True
+            )
+
+        return project
+
+    def get_project(self, name: str) -> Optional[Project]:
+        """Get a project by name."""
+        project_path = self.base_dir / name
+        meta_path = project_path / SVENGALI_DIR / "project.json"
+
+        if not meta_path.exists():
+            # Check if directory exists but wasn't initialized by svengali
+            if project_path.exists():
+                # Initialize svengali in existing directory
+                return self._init_existing_directory(project_path, name)
+            return None
+
+        try:
+            with open(meta_path) as f:
+                data = json.load(f)
+            return Project.from_dict(data)
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.error(f"Failed to load project {name}: {e}")
+            return None
+
+    def _init_existing_directory(self, path: Path, name: str) -> Project:
+        """Initialize svengali in an existing directory."""
+        svengali_dir = path / SVENGALI_DIR
+        svengali_dir.mkdir(exist_ok=True)
+        (svengali_dir / "tasks").mkdir(exist_ok=True)
+
+        project = Project(name=name, path=path)
+        meta_path = svengali_dir / "project.json"
+        with open(meta_path, "w") as f:
+            json.dump(project.to_dict(), f, indent=2)
+
+        return project
+
+    def list_projects(self) -> list[Project]:
+        """List all projects."""
+        projects = []
+        for item in self.base_dir.iterdir():
+            if item.is_dir() and not item.name.startswith("."):
+                project = self.get_project(item.name)
+                if project:
+                    projects.append(project)
+        return sorted(projects, key=lambda p: p.created_at, reverse=True)
+
+    def delete_project(self, name: str, delete_files: bool = False) -> bool:
+        """Delete a project. If delete_files=False, only removes .svengali."""
+        import shutil
+        project_path = self.base_dir / name
+
+        if not project_path.exists():
+            return False
+
+        if delete_files:
+            shutil.rmtree(project_path)
+        else:
+            svengali_dir = project_path / SVENGALI_DIR
+            if svengali_dir.exists():
+                shutil.rmtree(svengali_dir)
+        return True
+
+    def get_state_manager(self, project: Project) -> "StateManager":
+        """Get a StateManager scoped to this project."""
+        return StateManager(project.tasks_dir)
 
 
 class StateManager:
