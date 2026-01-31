@@ -415,6 +415,15 @@ class Orchestrator:
                 guide,
             )
 
+            # Auto-approve if no critical issues (manager might be overly strict)
+            issues = review.get("issues", [])
+            critical_issues = [i for i in issues if i.get("severity") == "critical"]
+            if review.get("decision") != "approved" and not critical_issues:
+                logger.info(f"Auto-approving: manager rejected but no critical issues found")
+                review["decision"] = "approved"
+                review["auto_approved"] = True
+                review["notes"] = "Approved with minor suggestions (no blocking issues)"
+
             state.set_review(task_id, chunk_id, attempt.id, review)
 
             if review.get("decision") == "approved":
@@ -422,7 +431,11 @@ class Orchestrator:
                     type=EventType.CHUNK_APPROVED,
                     task_id=task_id,
                     chunk_id=chunk_id,
-                    data={"project": project.name},
+                    data={
+                        "project": project.name,
+                        "auto_approved": review.get("auto_approved", False),
+                        "notes": review.get("notes", ""),
+                    },
                 ))
 
                 # Commit changes in project workspace

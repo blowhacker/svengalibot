@@ -290,6 +290,8 @@ function handleSSEEvent(data) {
             if (data.data?.reconsidered) {
                 terminal.textContent += `\n[✓ Chunk APPROVED after reconsideration]\n`;
                 terminal.textContent += `Reasoning: ${data.data.reasoning || 'Manager accepted Claude\'s explanation'}\n`;
+            } else if (data.data?.auto_approved) {
+                terminal.textContent += '[✓ Chunk AUTO-APPROVED (no critical issues)]\n';
             } else {
                 terminal.textContent += '[✓ Chunk approved]\n';
             }
