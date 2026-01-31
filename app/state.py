@@ -57,6 +57,7 @@ class Chunk:
     attempts: list[Attempt] = field(default_factory=list)
     current_attempt: Optional[str] = None
     files_affected: list[str] = field(default_factory=list)
+    baseline_commit: Optional[str] = None  # Git commit hash before first attempt
 
     def to_dict(self):
         d = asdict(self)

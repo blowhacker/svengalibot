@@ -285,6 +285,18 @@ class Orchestrator:
         previous_feedback = None
         attempt_history = []  # Track all attempts for deep analysis
 
+        # Get or capture baseline commit for this chunk
+        # This persists across retries so we always diff against the original state
+        if chunk.baseline_commit:
+            baseline_commit = chunk.baseline_commit
+            logger.info(f"Chunk {chunk_id} using stored baseline: {baseline_commit[:8]}")
+        else:
+            baseline_commit = self._get_baseline_commit(project.path)
+            logger.info(f"Chunk {chunk_id} captured new baseline: {baseline_commit[:8] if baseline_commit else 'none'}")
+            # Store baseline in chunk for future retries
+            if baseline_commit:
+                state.update_chunk(task_id, chunk_id, baseline_commit=baseline_commit)
+
         for attempt_num in range(self.max_attempts):
             if self._should_stop(task_key):
                 return False
@@ -366,6 +378,7 @@ class Orchestrator:
                 guide=guide,
                 previous_feedback=previous_feedback,
                 on_output=on_output,
+                baseline_commit=baseline_commit,
             )
 
             # Complete attempt
@@ -452,6 +465,21 @@ class Orchestrator:
             )
         except Exception as e:
             logger.warning(f"Failed to commit: {e}")
+
+    def _get_baseline_commit(self, workspace: Path) -> str:
+        """Get the current HEAD commit hash as a baseline for diff comparison."""
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+            )
+            return result.stdout.strip()
+        except Exception as e:
+            logger.warning(f"Failed to get baseline commit: {e}")
+            return ""
 
     def _get_codebase_context(self, project: Project) -> str:
         """Get context about the project codebase."""
@@ -552,6 +580,9 @@ class Orchestrator:
                 chunk_id=chunk_id,
                 data={"project": project_name, "manual": True},
             ))
+
+            # Commit any uncommitted changes when manually approving
+            self._commit_chunk(project.path, f"Manual approval: {chunk_id} - {chunk.title}")
 
             # If task was awaiting approval, resume execution
             task = state.get_task(task_id)

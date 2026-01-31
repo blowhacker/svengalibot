@@ -79,8 +79,15 @@ class Worker:
         guide: dict,
         previous_feedback: Optional[str] = None,
         on_output: Optional[Callable[[str], None]] = None,
+        baseline_commit: Optional[str] = None,
     ) -> WorkerResult:
-        """Execute a chunk locally using Claude CLI."""
+        """Execute a chunk locally using Claude CLI.
+
+        Args:
+            baseline_commit: If provided, diff against this commit instead of current HEAD.
+                           This is important for retries where we want to see ALL changes
+                           across multiple attempts, not just changes in the latest attempt.
+        """
         prompt = self._build_prompt(chunk_spec, context, guide, previous_feedback)
 
         # Build command - use -p for print mode with prompt via stdin
@@ -91,9 +98,11 @@ class Worker:
         logger.debug(f"Prompt (first 200 chars): {prompt[:200]}...")
 
         try:
-            # Get the current commit hash BEFORE running Claude
-            # Claude may commit changes, so we need to diff against this baseline
-            baseline_commit = self._get_current_commit()
+            # Use provided baseline, or capture current HEAD if not provided
+            # For retries, caller should pass the original baseline from before first attempt
+            if not baseline_commit:
+                baseline_commit = self._get_current_commit()
+            logger.info(f"Using baseline commit for diff: {baseline_commit[:8] if baseline_commit else 'none'}")
 
             # Run Claude CLI with prompt via stdin
             process = subprocess.Popen(
