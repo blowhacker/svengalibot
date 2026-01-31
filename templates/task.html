@@ -3,48 +3,59 @@
 {% block title %}Task {{ task_id }} - Svengalibot{% endblock %}
 
 {% block content %}
-<div class="task-detail">
-    <header class="task-header">
-        <a href="/project/{{ project_name }}" class="back-link">&larr; {{ project_name }}</a>
-        <h1>Task <span id="task-id">{{ task_id }}</span></h1>
-        <span id="task-status" class="status status-pending">pending</span>
-    </header>
+<div class="task-layout">
+    <!-- Left panel: scrollable content -->
+    <div class="task-panel-left">
+        <header class="task-header">
+            <a href="/project/{{ project_name }}" class="back-link">&larr; {{ project_name }}</a>
+            <div class="task-title-row">
+                <h1>Task <span id="task-id">{{ task_id }}</span></h1>
+                <span id="task-status" class="status status-pending">pending</span>
+            </div>
+        </header>
 
-    <div class="controls">
-        <button id="btn-pause" class="btn-secondary">Pause</button>
-        <button id="btn-resume" class="btn-secondary" style="display:none">Resume</button>
-        <button id="btn-cancel" class="btn-danger">Cancel</button>
-        <button id="btn-retry" class="btn-secondary" style="display:none">Retry Chunk</button>
-        <button id="btn-approve" class="btn-primary" disabled>Approve Chunk</button>
-        <button id="btn-delete" class="btn-danger" style="display:none">Delete Task</button>
+        <div class="controls">
+            <button id="btn-pause" class="btn-secondary">Pause</button>
+            <button id="btn-resume" class="btn-secondary" style="display:none">Resume</button>
+            <button id="btn-cancel" class="btn-danger">Cancel</button>
+            <button id="btn-retry" class="btn-secondary" style="display:none">Retry Chunk</button>
+            <button id="btn-approve" class="btn-primary" disabled>Approve Chunk</button>
+            <button id="btn-delete" class="btn-danger" style="display:none">Delete Task</button>
+        </div>
+
+        <section class="task-description">
+            <h2>Description</h2>
+            <p id="description"></p>
+        </section>
+
+        <section class="task-plan">
+            <h2>Plan</h2>
+            <div id="plan-analysis"></div>
+            <div id="chunks-list"></div>
+        </section>
+
+        <section class="diff-viewer">
+            <h2>Changes</h2>
+            <pre id="diff-output" class="diff"></pre>
+        </section>
+
+        <section class="review-section" style="display:none">
+            <h2>Review</h2>
+            <div id="review-content"></div>
+        </section>
     </div>
 
-    <section class="task-description">
-        <h2>Description</h2>
-        <p id="description"></p>
-    </section>
-
-    <section class="task-plan">
-        <h2>Plan</h2>
-        <div id="plan-analysis"></div>
-        <div id="chunks-list"></div>
-    </section>
-
-    <section class="live-output">
-        <h2>Live Output</h2>
-        <div id="worker-status" class="worker-status" style="display:none">🤖 Claude is coding...</div>
-        <div id="terminal" class="terminal"></div>
-    </section>
-
-    <section class="diff-viewer">
-        <h2>Changes</h2>
-        <pre id="diff-output" class="diff"></pre>
-    </section>
-
-    <section class="review-section" style="display:none">
-        <h2>Review</h2>
-        <div id="review-content"></div>
-    </section>
+    <!-- Right panel: sticky terminal -->
+    <div class="task-panel-right">
+        <div class="terminal-container">
+            <div class="terminal-header">
+                <span>Live Output</span>
+                <button id="btn-clear-terminal" class="btn-small">Clear</button>
+            </div>
+            <div id="worker-status" class="worker-status" style="display:none">🤖 Claude is coding...</div>
+            <div id="terminal" class="terminal"></div>
+        </div>
+    </div>
 </div>
 {% endblock %}
 
@@ -417,6 +428,10 @@ document.getElementById('btn-delete').addEventListener('click', async () => {
         await fetch(`${baseUrl}`, {method: 'DELETE'});
         window.location.href = `/project/${projectName}`;
     }
+});
+
+document.getElementById('btn-clear-terminal').addEventListener('click', () => {
+    document.getElementById('terminal').textContent = '[Terminal cleared]\n';
 });
 
 // Initialize

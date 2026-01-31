@@ -172,16 +172,85 @@ textarea:focus {
     padding: 2rem;
 }
 
-/* Task detail */
-.task-detail {
+/* Task detail - split layout */
+.task-layout {
     display: grid;
-    gap: 2rem;
+    grid-template-columns: 1fr 450px;
+    gap: 1.5rem;
+    height: calc(100vh - 100px);
+}
+
+.task-panel-left {
+    overflow-y: auto;
+    padding-right: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.task-panel-right {
+    position: sticky;
+    top: 0;
+    height: calc(100vh - 100px);
+}
+
+.terminal-container {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: #000;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.terminal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 1rem;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+}
+
+.btn-small {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.btn-small:hover {
+    color: var(--text);
+    border-color: var(--text-muted);
 }
 
 .task-header {
     display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.task-title-row {
+    display: flex;
     justify-content: space-between;
     align-items: center;
+}
+
+/* Responsive: stack on narrow screens */
+@media (max-width: 1000px) {
+    .task-layout {
+        grid-template-columns: 1fr;
+        height: auto;
+    }
+
+    .task-panel-right {
+        position: relative;
+        height: 400px;
+    }
 }
 
 .controls {
@@ -207,17 +276,22 @@ textarea:focus {
     background: #000;
     color: #0f0;
     font-family: 'Fira Code', 'Monaco', monospace;
-    font-size: 0.875rem;
+    font-size: 0.8rem;
     padding: 1rem;
-    border-radius: 6px;
-    height: 300px;
+    flex: 1;
     overflow-y: auto;
     white-space: pre-wrap;
     word-wrap: break-word;
 }
 
+/* Standalone terminal (not in split layout) */
+.live-output .terminal {
+    height: 300px;
+    border-radius: 6px;
+}
+
 .worker-status + .terminal {
-    border-radius: 0 0 6px 6px;
+    border-radius: 0;
 }
 
 .diff {
