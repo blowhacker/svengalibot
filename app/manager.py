@@ -172,6 +172,30 @@ class Manager:
 
         return self._extract_json(response)
 
+    def reconsider_with_rebuttal(
+        self,
+        original_review: dict,
+        worker_response: str,
+    ) -> dict:
+        """Reconsider a review decision after hearing the worker's perspective."""
+        prompt_template = self._load_prompt("reconsider")
+
+        issues_text = "\n".join(
+            f"- [{i.get('severity', 'issue').upper()}] {i.get('description', '')}"
+            for i in original_review.get("issues", [])
+        )
+
+        prompt = prompt_template.format(
+            original_decision=original_review.get("decision", "rejected"),
+            issues=issues_text or "No specific issues listed.",
+            worker_response=worker_response,
+        )
+
+        messages = [{"role": "user", "content": prompt}]
+        response = self._call_api(messages)
+
+        return self._extract_json(response)
+
     def summarize_feedback(self, review: dict) -> str:
         """Create a concise summary of review feedback for retry attempts."""
         if review.get("decision") == "approved":

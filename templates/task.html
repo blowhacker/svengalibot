@@ -287,7 +287,12 @@ function handleSSEEvent(data) {
             break;
 
         case 'chunk_approved':
-            terminal.textContent += '[✓ Chunk approved]\n';
+            if (data.data?.reconsidered) {
+                terminal.textContent += `\n[✓ Chunk APPROVED after reconsideration]\n`;
+                terminal.textContent += `Reasoning: ${data.data.reasoning || 'Manager accepted Claude\'s explanation'}\n`;
+            } else {
+                terminal.textContent += '[✓ Chunk approved]\n';
+            }
             loadTask();
             break;
 

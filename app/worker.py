@@ -333,6 +333,63 @@ class Worker:
 
         return output[:500] if output else "No summary available"
 
+    def get_clarification(
+        self,
+        chunk_spec: dict,
+        review_feedback: dict,
+    ) -> str:
+        """Ask Claude to clarify its implementation decisions before retry.
+
+        This is a soft ask - giving Claude a chance to explain context
+        the reviewer might have missed.
+        """
+        issues_text = "\n".join(
+            f"- [{i.get('severity', 'issue').upper()}] {i.get('description', '')}"
+            for i in review_feedback.get("issues", [])
+        )
+
+        prompt = f"""A code reviewer has flagged some concerns with your implementation.
+
+## What you implemented
+{chunk_spec.get('title', 'Task')}: {chunk_spec.get('description', '')}
+
+## Reviewer's concerns
+{issues_text}
+
+## Reviewer's summary
+{review_feedback.get('summary', '')}
+
+## Your response
+
+Before we proceed with changes, is there any context the reviewer might be missing?
+For example:
+- Constraints or requirements that informed your approach
+- Trade-offs you intentionally made
+- Reasons why the flagged approach might be preferable
+
+Keep it brief (2-3 sentences per point). Only mention points where you think there's genuine misunderstanding.
+If the reviewer's concerns are all valid, just say "The feedback is fair, I'll address these issues."
+
+Respond conversationally, not as code."""
+
+        cmd = ["claude", "-p", "--dangerously-skip-permissions"]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=self.workspace_dir,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            response = result.stdout.strip()
+            logger.info(f"Worker clarification: {response[:200]}...")
+            return response
+        except Exception as e:
+            logger.error(f"Failed to get clarification: {e}")
+            return "The feedback is fair, I'll address these issues."
+
     def push_changes(self, message: str = "Worker changes") -> bool:
         """Commit and push changes to remote."""
         try:

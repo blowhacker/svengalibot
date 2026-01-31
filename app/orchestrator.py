@@ -437,6 +437,57 @@ class Orchestrator:
                     data={"project": project.name, "review": review, "attempt": attempt_num + 1},
                 ))
 
+                # Give worker a chance to clarify before retry (soft rebuttal)
+                self._emit(Event(
+                    type=EventType.MANAGER_THINKING,
+                    task_id=task_id,
+                    chunk_id=chunk_id,
+                    data={"project": project.name, "message": "Asking Claude for clarification..."},
+                ))
+
+                worker_clarification = worker.get_clarification(chunk_spec, review)
+
+                # If worker has something to say, let manager reconsider
+                if worker_clarification and "feedback is fair" not in worker_clarification.lower():
+                    self._emit(Event(
+                        type=EventType.CHUNK_OUTPUT,
+                        task_id=task_id,
+                        chunk_id=chunk_id,
+                        data={"project": project.name, "content": f"\n[Claude's response to feedback]\n{worker_clarification}\n"},
+                    ))
+
+                    self._emit(Event(
+                        type=EventType.MANAGER_THINKING,
+                        task_id=task_id,
+                        chunk_id=chunk_id,
+                        data={"project": project.name, "message": "Manager reconsidering with Claude's input..."},
+                    ))
+
+                    reconsideration = self.manager.reconsider_with_rebuttal(review, worker_clarification)
+
+                    if reconsideration.get("final_decision") == "approved":
+                        self._emit(Event(
+                            type=EventType.CHUNK_APPROVED,
+                            task_id=task_id,
+                            chunk_id=chunk_id,
+                            data={"project": project.name, "reconsidered": True, "reasoning": reconsideration.get("reasoning", "")},
+                        ))
+                        self._commit_chunk(project.path, f"Complete {chunk_id}: {chunk.title}")
+                        return True
+
+                    # Manager maintained position - use updated feedback
+                    self._emit(Event(
+                        type=EventType.MANAGER_RESPONSE,
+                        task_id=task_id,
+                        chunk_id=chunk_id,
+                        data={
+                            "project": project.name,
+                            "message": f"Manager maintains rejection: {reconsideration.get('reasoning', '')}",
+                            "remaining_blockers": reconsideration.get("remaining_blockers", []),
+                        },
+                    ))
+                    review = {**review, "feedback_for_retry": reconsideration.get("feedback_for_retry", review.get("feedback_for_retry", ""))}
+
                 # Track attempt for deep analysis
                 attempt_history.append({
                     "attempt": attempt_num + 1,
