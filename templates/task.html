@@ -32,6 +32,7 @@
 
     <section class="live-output">
         <h2>Live Output</h2>
+        <div id="worker-status" class="worker-status" style="display:none">🤖 Claude is coding...</div>
         <div id="terminal" class="terminal"></div>
     </section>
 
@@ -53,6 +54,36 @@ const projectName = '{{ project_name }}';
 const taskId = '{{ task_id }}';
 const baseUrl = `/project/${projectName}/task/${taskId}`;
 let currentTask = null;
+let workerStartTime = null;
+let workerTimer = null;
+
+function formatElapsed(seconds) {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+}
+
+function startWorkerTimer() {
+    workerStartTime = Date.now();
+    const statusLine = document.getElementById('worker-status');
+    if (statusLine) statusLine.style.display = 'block';
+
+    workerTimer = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - workerStartTime) / 1000);
+        if (statusLine) {
+            statusLine.textContent = `🤖 Claude is coding... (${formatElapsed(elapsed)})`;
+        }
+    }, 1000);
+}
+
+function stopWorkerTimer() {
+    if (workerTimer) {
+        clearInterval(workerTimer);
+        workerTimer = null;
+    }
+    const statusLine = document.getElementById('worker-status');
+    if (statusLine) statusLine.style.display = 'none';
+}
 
 function updateUI(task) {
     currentTask = task;
@@ -207,6 +238,7 @@ function handleSSEEvent(data) {
         case 'worker_started':
             terminal.textContent += `[🤖 ${data.data?.message || 'Starting worker...'}]\n`;
             terminal.scrollTop = terminal.scrollHeight;
+            startWorkerTimer();
             break;
 
         case 'chunk_started':
@@ -222,7 +254,9 @@ function handleSSEEvent(data) {
             break;
 
         case 'chunk_completed':
-            terminal.textContent += '\n[Chunk execution completed]\n';
+            stopWorkerTimer();
+            const elapsed = workerStartTime ? Math.floor((Date.now() - workerStartTime) / 1000) : 0;
+            terminal.textContent += `\n[Chunk execution completed in ${formatElapsed(elapsed)}]\n`;
             if (data.data?.diff) {
                 diffOutput.textContent = data.data.diff;
             }
@@ -239,18 +273,36 @@ function handleSSEEvent(data) {
             break;
 
         case 'chunk_rejected':
-            terminal.textContent += '[✗ Chunk rejected - will retry]\n';
+            terminal.textContent += '\n[✗ CHUNK REJECTED]\n';
             if (data.data?.review) {
+                const review = data.data.review;
+                terminal.textContent += '─'.repeat(50) + '\n';
+                terminal.textContent += `MANAGER FEEDBACK:\n`;
+                terminal.textContent += `${review.summary || 'No summary'}\n\n`;
+                if (review.feedback_for_retry) {
+                    terminal.textContent += `ACTION NEEDED:\n${review.feedback_for_retry}\n\n`;
+                }
+                if (review.issues?.length) {
+                    terminal.textContent += `ISSUES:\n`;
+                    review.issues.forEach(i => {
+                        terminal.textContent += `  [${i.severity?.toUpperCase() || 'ISSUE'}] ${i.description}\n`;
+                    });
+                }
+                terminal.textContent += '─'.repeat(50) + '\n';
+                terminal.scrollTop = terminal.scrollHeight;
+
+                // Also show in review section
                 reviewSection.style.display = 'block';
                 reviewContent.innerHTML = `
                     <div class="review-result review-rejected">
-                        <h3>Feedback</h3>
-                        <p>${escapeHtml(data.data.review.feedback_for_retry || data.data.review.summary)}</p>
-                        ${data.data.review.issues?.length ? `
-                            <h4>Issues</h4>
+                        <h3>Manager Feedback</h3>
+                        <p><strong>${escapeHtml(review.summary || '')}</strong></p>
+                        ${review.feedback_for_retry ? `<p>${escapeHtml(review.feedback_for_retry)}</p>` : ''}
+                        ${review.issues?.length ? `
+                            <h4>Issues Found</h4>
                             <ul>
-                                ${data.data.review.issues.map(i => `
-                                    <li class="issue-${i.severity}">${escapeHtml(i.description)}</li>
+                                ${review.issues.map(i => `
+                                    <li class="issue-${i.severity}"><strong>[${i.severity?.toUpperCase() || 'ISSUE'}]</strong> ${escapeHtml(i.description)}</li>
                                 `).join('')}
                             </ul>
                         ` : ''}
@@ -271,7 +323,20 @@ function handleSSEEvent(data) {
             break;
 
         case 'task_paused':
-            terminal.textContent += '\n[Task paused]\n';
+            if (data.data?.reason === 'max_attempts_reached') {
+                terminal.textContent += '\n' + '═'.repeat(50) + '\n';
+                terminal.textContent += '⚠️  NEEDS YOUR ATTENTION\n';
+                terminal.textContent += '═'.repeat(50) + '\n';
+                terminal.textContent += `${data.data.message || 'Task paused for review'}\n`;
+                terminal.textContent += '\nOptions:\n';
+                terminal.textContent += '  • Click "Approve" to accept current state and continue\n';
+                terminal.textContent += '  • Click "Retry" to try this chunk again\n';
+                terminal.textContent += '  • Click "Cancel" to stop the task\n';
+                terminal.textContent += '═'.repeat(50) + '\n';
+            } else {
+                terminal.textContent += '\n[Task paused]\n';
+            }
+            terminal.scrollTop = terminal.scrollHeight;
             loadTask();
             break;
 
