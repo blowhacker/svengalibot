@@ -10,7 +10,7 @@
             <a href="/project/{{ project_name }}" class="back-link">&larr; {{ project_name }}</a>
         </div>
         <div class="sidebar-section">
-            <div class="sidebar-title">Files</div>
+            <div class="sidebar-title">Files <button id="btn-refresh-files" class="btn-icon" title="Refresh">↻</button></div>
             <div id="file-tree" class="file-tree-mini"></div>
         </div>
         <div class="sidebar-section">
@@ -55,13 +55,36 @@
         </div>
     </div>
 </div>
+
+<!-- File viewer modal -->
+<div id="file-modal" class="modal" style="display:none">
+    <div class="modal-content modal-wide">
+        <div class="modal-header">
+            <span id="file-modal-title">File</span>
+            <button class="modal-close" onclick="closeFileModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <pre id="file-content"><code></code></pre>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
+<!-- Marked.js for markdown rendering -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script>
 const projectName = '{{ project_name }}';
 const taskId = '{{ task_id }}';
 let currentTask = null;
+let displayedMessageIds = new Set(); // Track displayed messages to avoid duplicates
+let streamingMessageEl = null; // Current streaming message element
+
+// Configure marked for safe rendering
+marked.setOptions({
+    breaks: true,
+    gfm: true,
+});
 
 // Load task and connect to stream
 async function loadTask() {
@@ -103,16 +126,16 @@ function updateUI(task) {
         btnResume.style.display = 'none';
     }
 
-    // Render existing messages
+    // Render messages (only new ones)
     if (task.messages) {
-        renderMessages(task.messages);
+        for (const msg of task.messages) {
+            const msgId = msg.timestamp + '_' + msg.role;
+            if (!displayedMessageIds.has(msgId)) {
+                appendMessage(msg);
+                displayedMessageIds.add(msgId);
+            }
+        }
     }
-}
-
-function renderMessages(messages) {
-    const container = document.getElementById('chat-messages');
-    container.innerHTML = messages.map(msg => renderMessage(msg)).join('');
-    container.scrollTop = container.scrollHeight;
 }
 
 function renderMessage(msg) {
@@ -120,31 +143,66 @@ function renderMessage(msg) {
     const provider = msg.provider || roleClass;
     const icon = getProviderIcon(provider);
     const label = getProviderLabel(provider, msg.role);
+    const msgId = msg.timestamp + '_' + msg.role;
 
     return `
-        <div class="chat-message ${roleClass}">
+        <div class="chat-message ${roleClass}" data-msg-id="${msgId}">
             <div class="message-header">
                 <span class="message-icon">${icon}</span>
                 <span class="message-label">${label}</span>
                 <span class="message-time">${formatTime(msg.timestamp)}</span>
             </div>
-            <div class="message-content">${formatContent(msg.content, msg.role)}</div>
+            <div class="message-content markdown-body">${formatContent(msg.content, msg.role)}</div>
         </div>
     `;
 }
 
 function appendMessage(msg) {
     const container = document.getElementById('chat-messages');
+    const msgId = msg.timestamp + '_' + msg.role;
+
+    // Don't add duplicates
+    if (displayedMessageIds.has(msgId)) return;
+    displayedMessageIds.add(msgId);
+
     container.insertAdjacentHTML('beforeend', renderMessage(msg));
     container.scrollTop = container.scrollHeight;
+
+    // Clear streaming reference if this is a complete message
+    streamingMessageEl = null;
 }
 
-function appendToLastMessage(content) {
+function startStreamingMessage(role, provider) {
     const container = document.getElementById('chat-messages');
-    const lastMsg = container.querySelector('.chat-message:last-child .message-content');
-    if (lastMsg) {
-        lastMsg.textContent += content;
+    const msg = {
+        role: role,
+        provider: provider,
+        content: '',
+        timestamp: new Date().toISOString(),
+    };
+
+    container.insertAdjacentHTML('beforeend', renderMessage(msg));
+    streamingMessageEl = container.querySelector('.chat-message:last-child .message-content');
+    container.scrollTop = container.scrollHeight;
+
+    return streamingMessageEl;
+}
+
+function appendToStreamingMessage(content) {
+    if (streamingMessageEl) {
+        // Append raw text, we'll format when complete
+        streamingMessageEl.textContent += content;
+        const container = document.getElementById('chat-messages');
         container.scrollTop = container.scrollHeight;
+    }
+}
+
+function finalizeStreamingMessage() {
+    if (streamingMessageEl) {
+        // Re-render with markdown
+        const text = streamingMessageEl.textContent;
+        streamingMessageEl.innerHTML = formatContent(text, 'worker');
+        streamingMessageEl = null;
     }
 }
 
@@ -174,19 +232,19 @@ function formatTime(timestamp) {
 }
 
 function formatContent(content, role) {
-    // Escape HTML
-    const div = document.createElement('div');
-    div.textContent = content || '';
-    let escaped = div.innerHTML;
+    if (!content) return '';
 
-    // Convert markdown-style code blocks
-    escaped = escaped.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>');
-    escaped = escaped.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-    // Convert newlines
-    escaped = escaped.replace(/\n/g, '<br>');
-
-    return escaped;
+    // Use marked.js for markdown rendering
+    try {
+        // Sanitize by escaping HTML first, then parse markdown
+        let html = marked.parse(content);
+        return html;
+    } catch (e) {
+        // Fallback to basic escaping
+        const div = document.createElement('div');
+        div.textContent = content;
+        return div.innerHTML.replace(/\n/g, '<br>');
+    }
 }
 
 // SSE Connection
@@ -216,30 +274,32 @@ function handleStreamEvent(data) {
             break;
 
         case 'message':
-            // New complete message
+            // New complete message - finalize any streaming first
+            finalizeStreamingMessage();
             appendMessage(data.data);
             break;
 
         case 'message_chunk':
             // Streaming chunk - append to last message
-            appendToLastMessage(data.data.content);
+            appendToStreamingMessage(data.data.content);
             break;
 
         case 'worker_started':
-            appendMessage({
-                role: 'worker',
-                provider: 'claude',
-                content: '',
-                timestamp: new Date().toISOString(),
-            });
+            // Start a new streaming message for worker
+            finalizeStreamingMessage();
+            startStreamingMessage('worker', 'claude');
             break;
 
         case 'chunk_output':
             // Worker output streaming
-            appendToLastMessage(data.data?.content || '');
+            if (!streamingMessageEl) {
+                startStreamingMessage('worker', 'claude');
+            }
+            appendToStreamingMessage(data.data?.content || '');
             break;
 
         case 'chunk_reviewing':
+            finalizeStreamingMessage();
             appendMessage({
                 role: 'system',
                 provider: 'system',
@@ -252,7 +312,7 @@ function handleStreamEvent(data) {
             appendMessage({
                 role: 'reviewer',
                 provider: 'openai',
-                content: '✅ Approved: ' + (data.data?.notes || 'Work looks good!'),
+                content: '✅ **Approved:** ' + (data.data?.notes || 'Work looks good!'),
                 timestamp: new Date().toISOString(),
             });
             updateIterationCount();
@@ -263,7 +323,7 @@ function handleStreamEvent(data) {
             appendMessage({
                 role: 'reviewer',
                 provider: 'openai',
-                content: '❌ Changes requested:\n\n' + (review.feedback_for_retry || review.summary || 'Please revise.'),
+                content: '❌ **Changes requested:**\n\n' + (review.feedback_for_retry || review.summary || 'Please revise.'),
                 timestamp: new Date().toISOString(),
             });
             updateIterationCount();
@@ -275,16 +335,19 @@ function handleStreamEvent(data) {
             break;
 
         case 'task_completed':
+            finalizeStreamingMessage();
             appendMessage({
                 role: 'system',
                 provider: 'system',
-                content: '🎉 Task completed successfully!',
+                content: '🎉 **Task completed successfully!**',
                 timestamp: new Date().toISOString(),
             });
             loadTask();
+            loadFileTree(); // Refresh files
             break;
 
         case 'task_paused':
+            finalizeStreamingMessage();
             appendMessage({
                 role: 'system',
                 provider: 'system',
@@ -296,10 +359,11 @@ function handleStreamEvent(data) {
 
         case 'task_failed':
         case 'error':
+            finalizeStreamingMessage();
             appendMessage({
                 role: 'system',
                 provider: 'system',
-                content: '❌ Error: ' + (data.data?.error || 'Unknown error'),
+                content: '❌ **Error:** ' + (data.data?.error || 'Unknown error'),
                 timestamp: new Date().toISOString(),
             });
             loadTask();
@@ -343,43 +407,263 @@ document.getElementById('btn-stop').addEventListener('click', async () => {
     }
 });
 
-// File tree (simplified)
+// File tree
 async function loadFileTree() {
     try {
         const response = await fetch(`/project/${projectName}/files`);
         const data = await response.json();
-        renderFileTree(data.tree);
+        renderFileTree(data.tree, document.getElementById('file-tree'), 0);
     } catch (e) {
         console.error('Failed to load files:', e);
     }
 }
 
-function renderFileTree(items, depth = 0) {
-    const container = document.getElementById('file-tree');
+function renderFileTree(items, container, depth) {
     if (!items || items.length === 0) {
-        container.innerHTML = '<div class="empty-state">No files yet</div>';
+        if (depth === 0) {
+            container.innerHTML = '<div class="empty-state">No files yet</div>';
+        }
         return;
     }
 
-    container.innerHTML = items.slice(0, 20).map(item => {
-        const icon = item.type === 'directory' ? '📁' : getFileIcon(item.extension);
-        const indent = depth * 12;
-        return `<div class="file-item" style="padding-left:${indent}px">${icon} ${item.name}</div>`;
-    }).join('');
+    // Clear container for top level
+    if (depth === 0) {
+        container.innerHTML = '';
+    }
 
-    if (items.length > 20) {
-        container.innerHTML += `<div class="file-item muted">...and ${items.length - 20} more</div>`;
+    // Limit items shown
+    const maxItems = depth === 0 ? 30 : 20;
+    const displayItems = items.slice(0, maxItems);
+
+    for (const item of displayItems) {
+        const div = document.createElement('div');
+        div.className = 'file-item' + (item.type === 'directory' ? ' directory' : '');
+        div.style.paddingLeft = (8 + depth * 12) + 'px';
+
+        const icon = item.type === 'directory' ? '📁' : getFileIcon(item.extension);
+        div.innerHTML = `<span class="file-icon">${icon}</span><span class="file-name">${item.name}</span>`;
+
+        if (item.type === 'file') {
+            div.onclick = () => openFile(item.path);
+            div.style.cursor = 'pointer';
+        } else if (item.type === 'directory' && item.children) {
+            div.onclick = (e) => {
+                e.stopPropagation();
+                toggleDirectory(div, item.children, depth + 1);
+            };
+            div.style.cursor = 'pointer';
+        }
+
+        container.appendChild(div);
+
+        // Render children if expanded by default
+        if (item.type === 'directory' && item.children && item.expanded) {
+            const childContainer = document.createElement('div');
+            childContainer.className = 'file-children';
+            container.appendChild(childContainer);
+            renderFileTree(item.children, childContainer, depth + 1);
+        }
+    }
+
+    if (items.length > maxItems) {
+        const more = document.createElement('div');
+        more.className = 'file-item muted';
+        more.style.paddingLeft = (8 + depth * 12) + 'px';
+        more.textContent = `...and ${items.length - maxItems} more`;
+        container.appendChild(more);
     }
 }
 
+function toggleDirectory(el, children, depth) {
+    const nextEl = el.nextElementSibling;
+    if (nextEl && nextEl.classList.contains('file-children')) {
+        // Collapse
+        nextEl.remove();
+        el.querySelector('.file-icon').textContent = '📁';
+    } else {
+        // Expand
+        el.querySelector('.file-icon').textContent = '📂';
+        const childContainer = document.createElement('div');
+        childContainer.className = 'file-children';
+        el.after(childContainer);
+        renderFileTree(children, childContainer, depth);
+    }
+}
+
+async function openFile(path) {
+    try {
+        const response = await fetch(`/project/${projectName}/file?path=${encodeURIComponent(path)}`);
+        const data = await response.json();
+
+        if (data.error) {
+            alert(data.error);
+            return;
+        }
+
+        document.getElementById('file-modal-title').textContent = path;
+        const codeEl = document.querySelector('#file-content code');
+        codeEl.textContent = data.content;
+        codeEl.className = 'language-' + (data.extension || 'text');
+
+        // Highlight if hljs available
+        if (window.hljs) {
+            hljs.highlightElement(codeEl);
+        }
+
+        document.getElementById('file-modal').style.display = 'flex';
+    } catch (e) {
+        console.error('Failed to load file:', e);
+        alert('Failed to load file');
+    }
+}
+
+function closeFileModal() {
+    document.getElementById('file-modal').style.display = 'none';
+}
+
+// Close modal on outside click
+document.getElementById('file-modal').addEventListener('click', (e) => {
+    if (e.target.id === 'file-modal') {
+        closeFileModal();
+    }
+});
+
+// Escape key closes modal
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        closeFileModal();
+    }
+});
+
 function getFileIcon(ext) {
-    const icons = { 'py': '🐍', 'js': '📜', 'md': '📝', 'json': '📋', 'html': '🌐', 'css': '🎨' };
+    const icons = {
+        'py': '🐍',
+        'js': '📜',
+        'ts': '📘',
+        'md': '📝',
+        'json': '📋',
+        'html': '🌐',
+        'css': '🎨',
+        'yaml': '⚙️',
+        'yml': '⚙️',
+        'txt': '📄',
+        'sh': '💻',
+    };
     return icons[ext] || '📄';
 }
+
+// Refresh files button
+document.getElementById('btn-refresh-files').addEventListener('click', loadFileTree);
 
 // Initialize
 loadTask();
 loadFileTree();
 connectStream();
 </script>
+
+<style>
+/* Additional styles for markdown content */
+.markdown-body {
+    line-height: 1.5;
+}
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+    margin-top: 0.5em;
+    margin-bottom: 0.3em;
+    font-weight: 600;
+}
+.markdown-body h1 { font-size: 1.4em; }
+.markdown-body h2 { font-size: 1.2em; }
+.markdown-body h3 { font-size: 1.1em; }
+.markdown-body p {
+    margin: 0.4em 0;
+}
+.markdown-body ul, .markdown-body ol {
+    margin: 0.3em 0;
+    padding-left: 1.5em;
+}
+.markdown-body li {
+    margin: 0.2em 0;
+}
+.markdown-body code {
+    background: rgba(0,0,0,0.1);
+    padding: 0.1em 0.3em;
+    border-radius: 3px;
+    font-size: 0.9em;
+}
+.markdown-body pre {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    padding: 0.8em;
+    border-radius: 4px;
+    overflow-x: auto;
+    margin: 0.5em 0;
+}
+.markdown-body pre code {
+    background: none;
+    padding: 0;
+    color: inherit;
+}
+.markdown-body blockquote {
+    border-left: 3px solid #666;
+    margin: 0.5em 0;
+    padding-left: 1em;
+    color: #888;
+}
+.markdown-body strong {
+    font-weight: 600;
+}
+
+/* File tree improvements */
+.file-item {
+    padding: 4px 8px;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85em;
+}
+.file-item:hover {
+    background: rgba(255,255,255,0.1);
+}
+.file-item.directory {
+    font-weight: 500;
+}
+.file-children {
+    /* Nested files */
+}
+.file-icon {
+    flex-shrink: 0;
+}
+.file-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* File modal */
+.modal-wide {
+    max-width: 900px;
+    width: 90%;
+}
+#file-content {
+    max-height: 70vh;
+    overflow: auto;
+    margin: 0;
+    font-size: 0.85em;
+}
+
+/* Refresh button */
+.btn-icon {
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    padding: 2px 6px;
+    font-size: 0.9em;
+    opacity: 0.7;
+}
+.btn-icon:hover {
+    opacity: 1;
+}
+</style>
 {% endblock %}
