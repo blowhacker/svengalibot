@@ -117,21 +117,28 @@ class Worker:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1,
             )
 
-            logger.info("Reading Claude output...")
+            logger.info("Waiting for Claude to complete (max 10 minutes)...")
 
-            output_lines = []
-            for line in iter(process.stdout.readline, ""):
-                output_lines.append(line)
-                logger.info(f"Claude: {line.rstrip()[:200]}")
-                if on_output:
-                    on_output(line)
+            # Use communicate() instead of readline - Claude doesn't stream stdout
+            try:
+                output, _ = process.communicate(timeout=600)  # 10 minute timeout
+                logger.info(f"Claude finished with exit code {process.returncode}")
+                logger.info(f"Output length: {len(output)} chars")
 
-            logger.info(f"Output loop finished, waiting for process...")
-            process.wait(timeout=600)  # 10 minute timeout
-            output = "".join(output_lines)
+                # Send output to callback in chunks for UI update
+                if on_output and output:
+                    # Send in reasonable chunks
+                    for i in range(0, len(output), 500):
+                        chunk = output[i:i+500]
+                        on_output(chunk)
+
+            except subprocess.TimeoutExpired:
+                logger.error("Claude timed out after 10 minutes")
+                process.kill()
+                output, _ = process.communicate()
+                output = output or ""
             logger.info(f"Claude CLI exited with code {process.returncode}")
 
             # Get diff of all changes since baseline (includes committed changes)
