@@ -10,9 +10,24 @@
             <a href="/project/{{ project_name }}" class="back-link">&larr; {{ project_name }}</a>
             <div class="task-title-row">
                 <h1>Task <span id="task-id">{{ task_id }}</span></h1>
-                <span id="task-status" class="status status-pending">pending</span>
+                <div class="task-badges">
+                    <span id="task-status" class="status status-pending">pending</span>
+                    <span id="cost-badge" class="cost-badge" style="display:none">$0.00</span>
+                </div>
             </div>
         </header>
+
+        <!-- Pipeline visualization -->
+        <div id="pipeline" class="pipeline-track"></div>
+
+        <!-- Keyboard shortcuts hint -->
+        <div class="shortcuts-hint">
+            <span class="shortcut-key">P</span> Pause/Resume
+            <span class="shortcut-key">A</span> Approve
+            <span class="shortcut-key">R</span> Retry
+            <span class="shortcut-key">C</span> Cancel
+            <span class="shortcut-key">E</span> Edit Plan
+        </div>
 
         <div class="controls">
             <button id="btn-pause" class="btn-secondary">Pause</button>
@@ -20,6 +35,7 @@
             <button id="btn-cancel" class="btn-danger">Cancel</button>
             <button id="btn-retry" class="btn-secondary" style="display:none">Retry Chunk</button>
             <button id="btn-approve" class="btn-primary" disabled>Approve Chunk</button>
+            <button id="btn-edit-plan" class="btn-secondary">Edit Plan</button>
             <button id="btn-delete" class="btn-danger" style="display:none">Delete Task</button>
         </div>
 
@@ -45,6 +61,22 @@
         </section>
     </div>
 
+    <!-- Plan Editor Modal -->
+    <div id="plan-editor-modal" class="modal" style="display:none">
+        <div class="modal-content plan-editor-content">
+            <h3>Edit Execution Plan</h3>
+            <p class="modal-hint">Drag chunks to reorder. Click to edit. Toggle skip to exclude chunks.</p>
+            <div id="plan-editor-chunks" class="plan-editor-chunks"></div>
+            <div class="plan-editor-actions">
+                <button id="btn-add-chunk" class="btn-secondary">+ Add Chunk</button>
+                <div class="modal-actions">
+                    <button id="btn-cancel-edit" class="btn-secondary">Cancel</button>
+                    <button id="btn-save-plan" class="btn-primary">Save Changes</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Right panel: sticky terminal -->
     <div class="task-panel-right">
         <div class="terminal-container">
@@ -67,11 +99,46 @@ const baseUrl = `/project/${projectName}/task/${taskId}`;
 let currentTask = null;
 let workerStartTime = null;
 let workerTimer = null;
+let editedPlan = null;  // Holds plan being edited in modal
+let draggedChunk = null;  // For drag-and-drop
 
 function formatElapsed(seconds) {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+}
+
+function formatCost(cost) {
+    return `$${cost.toFixed(2)}`;
+}
+
+function updatePipeline(task) {
+    const pipeline = document.getElementById('pipeline');
+    if (!task.chunks || task.chunks.length === 0) {
+        pipeline.innerHTML = '<span class="pipeline-empty">Plan not ready</span>';
+        return;
+    }
+
+    pipeline.innerHTML = task.chunks.map((chunk, i) => {
+        let statusClass = chunk.status;
+        if (chunk.skipped) statusClass = 'skipped';
+        return `
+            <div class="pipeline-step ${statusClass}" title="${escapeHtml(chunk.title)}">
+                <div class="pipeline-dot"></div>
+                <span class="pipeline-label">${i + 1}</span>
+            </div>
+            ${i < task.chunks.length - 1 ? '<div class="pipeline-connector"></div>' : ''}
+        `;
+    }).join('');
+}
+
+function updateCostBadge(usage) {
+    const badge = document.getElementById('cost-badge');
+    if (usage && (usage.cost > 0 || usage.total_tokens > 0)) {
+        badge.textContent = formatCost(usage.cost);
+        badge.title = `${usage.total_tokens.toLocaleString()} tokens (${usage.prompt_tokens.toLocaleString()} prompt + ${usage.completion_tokens.toLocaleString()} completion)`;
+        badge.style.display = 'inline-block';
+    }
 }
 
 function startWorkerTimer() {
@@ -106,6 +173,14 @@ function updateUI(task) {
 
     // Update description
     document.getElementById('description').textContent = task.description;
+
+    // Update pipeline visualization
+    updatePipeline(task);
+
+    // Update cost badge
+    if (task.usage) {
+        updateCostBadge(task.usage);
+    }
 
     // Update controls based on status
     const btnPause = document.getElementById('btn-pause');
@@ -372,6 +447,12 @@ function handleSSEEvent(data) {
             loadTask();
             break;
 
+        case 'usage_update':
+            if (data.data?.usage) {
+                updateCostBadge(data.data.usage);
+            }
+            break;
+
         case 'error':
             terminal.textContent += `\n[ERROR: ${data.data?.error || 'Unknown error'}]\n`;
             break;
@@ -448,6 +529,245 @@ document.getElementById('btn-delete').addEventListener('click', async () => {
 
 document.getElementById('btn-clear-terminal').addEventListener('click', () => {
     document.getElementById('terminal').textContent = '[Terminal cleared]\n';
+});
+
+// Plan Editor Functions
+document.getElementById('btn-edit-plan').addEventListener('click', openPlanEditor);
+document.getElementById('btn-cancel-edit').addEventListener('click', closePlanEditor);
+document.getElementById('btn-save-plan').addEventListener('click', savePlan);
+document.getElementById('btn-add-chunk').addEventListener('click', addChunk);
+
+function openPlanEditor() {
+    if (!currentTask || !currentTask.plan) {
+        alert('No plan to edit yet');
+        return;
+    }
+    editedPlan = JSON.parse(JSON.stringify(currentTask.plan)); // Deep copy
+    renderPlanEditor();
+    document.getElementById('plan-editor-modal').style.display = 'flex';
+}
+
+function closePlanEditor() {
+    document.getElementById('plan-editor-modal').style.display = 'none';
+    editedPlan = null;
+}
+
+function renderPlanEditor() {
+    const container = document.getElementById('plan-editor-chunks');
+    if (!editedPlan?.chunks) {
+        container.innerHTML = '<p class="empty-state">No chunks in plan</p>';
+        return;
+    }
+
+    // Find existing chunk statuses from currentTask
+    const chunkStatuses = {};
+    if (currentTask?.chunks) {
+        currentTask.chunks.forEach(c => {
+            chunkStatuses[`chunk_${String(c.id).padStart(3, '0').replace('chunk_', '')}`] = c.status;
+            chunkStatuses[c.id] = c.status;
+        });
+    }
+
+    container.innerHTML = editedPlan.chunks.map((chunk, i) => {
+        const chunkId = `chunk_${String(chunk.id).padStart(3, '0')}`;
+        const status = chunkStatuses[chunkId] || chunkStatuses[chunk.id] || 'pending';
+        const isCompleted = status === 'approved';
+        const isSkipped = chunk.skipped || false;
+
+        return `
+            <div class="plan-chunk-editor ${isCompleted ? 'completed' : ''} ${isSkipped ? 'skipped' : ''}"
+                 data-index="${i}" draggable="${!isCompleted}">
+                <div class="chunk-editor-header">
+                    <span class="chunk-drag-handle">${isCompleted ? '✓' : '⋮⋮'}</span>
+                    <span class="chunk-num">#${chunk.id}</span>
+                    ${isCompleted ? '<span class="completed-badge">Completed</span>' : ''}
+                    ${isSkipped ? '<span class="skip-badge">Skipped</span>' : ''}
+                    <div class="chunk-editor-actions">
+                        ${!isCompleted ? `
+                            <button class="btn-small btn-skip" onclick="toggleSkip(${i})">${isSkipped ? 'Unskip' : 'Skip'}</button>
+                            <button class="btn-small btn-danger" onclick="removeChunk(${i})">×</button>
+                        ` : ''}
+                    </div>
+                </div>
+                <div class="chunk-editor-body">
+                    <input type="text" class="chunk-title-input" value="${escapeHtml(chunk.title)}"
+                           placeholder="Chunk title" onchange="updateChunkField(${i}, 'title', this.value)"
+                           ${isCompleted ? 'disabled' : ''}>
+                    <textarea class="chunk-desc-input" placeholder="Description"
+                              onchange="updateChunkField(${i}, 'description', this.value)"
+                              ${isCompleted ? 'disabled' : ''}>${escapeHtml(chunk.description)}</textarea>
+                    <div class="chunk-criteria">
+                        <label>Acceptance Criteria:</label>
+                        <textarea class="chunk-criteria-input" placeholder="One criterion per line"
+                                  onchange="updateChunkCriteria(${i}, this.value)"
+                                  ${isCompleted ? 'disabled' : ''}>${(chunk.acceptance_criteria || []).join('\n')}</textarea>
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    // Add drag-and-drop handlers
+    setupDragAndDrop();
+}
+
+function setupDragAndDrop() {
+    const chunks = document.querySelectorAll('.plan-chunk-editor[draggable="true"]');
+    chunks.forEach(chunk => {
+        chunk.addEventListener('dragstart', handleDragStart);
+        chunk.addEventListener('dragover', handleDragOver);
+        chunk.addEventListener('drop', handleDrop);
+        chunk.addEventListener('dragend', handleDragEnd);
+    });
+}
+
+function handleDragStart(e) {
+    draggedChunk = this;
+    this.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+}
+
+function handleDragOver(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    this.classList.add('drag-over');
+}
+
+function handleDrop(e) {
+    e.preventDefault();
+    if (draggedChunk !== this) {
+        const fromIndex = parseInt(draggedChunk.dataset.index);
+        const toIndex = parseInt(this.dataset.index);
+
+        // Check if target is completed (can't move to before completed chunks)
+        if (this.classList.contains('completed')) {
+            return;
+        }
+
+        // Reorder chunks
+        const chunk = editedPlan.chunks.splice(fromIndex, 1)[0];
+        editedPlan.chunks.splice(toIndex, 0, chunk);
+
+        // Re-number chunks
+        editedPlan.chunks.forEach((c, i) => c.id = i + 1);
+
+        renderPlanEditor();
+    }
+    this.classList.remove('drag-over');
+}
+
+function handleDragEnd() {
+    this.classList.remove('dragging');
+    document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+}
+
+function updateChunkField(index, field, value) {
+    if (editedPlan?.chunks?.[index]) {
+        editedPlan.chunks[index][field] = value;
+    }
+}
+
+function updateChunkCriteria(index, value) {
+    if (editedPlan?.chunks?.[index]) {
+        editedPlan.chunks[index].acceptance_criteria = value.split('\n').filter(c => c.trim());
+    }
+}
+
+function toggleSkip(index) {
+    if (editedPlan?.chunks?.[index]) {
+        editedPlan.chunks[index].skipped = !editedPlan.chunks[index].skipped;
+        renderPlanEditor();
+    }
+}
+
+function removeChunk(index) {
+    if (editedPlan?.chunks && confirm('Remove this chunk?')) {
+        editedPlan.chunks.splice(index, 1);
+        // Re-number
+        editedPlan.chunks.forEach((c, i) => c.id = i + 1);
+        renderPlanEditor();
+    }
+}
+
+function addChunk() {
+    if (!editedPlan) editedPlan = { chunks: [] };
+    if (!editedPlan.chunks) editedPlan.chunks = [];
+
+    const newId = editedPlan.chunks.length + 1;
+    editedPlan.chunks.push({
+        id: newId,
+        title: 'New Chunk',
+        description: '',
+        acceptance_criteria: [],
+        depends_on: [],
+        skipped: false,
+    });
+    renderPlanEditor();
+}
+
+async function savePlan() {
+    if (!editedPlan) return;
+
+    try {
+        const response = await fetch(`${baseUrl}/plan`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(editedPlan),
+        });
+
+        if (response.ok) {
+            closePlanEditor();
+            loadTask();
+        } else {
+            const err = await response.json();
+            alert('Failed to save: ' + (err.error || 'Unknown error'));
+        }
+    } catch (e) {
+        alert('Failed to save plan: ' + e.message);
+    }
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', (e) => {
+    // Ignore if typing in an input/textarea or modal is open
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (document.getElementById('plan-editor-modal').style.display === 'flex') {
+        if (e.key === 'Escape') closePlanEditor();
+        return;
+    }
+
+    const key = e.key.toUpperCase();
+
+    switch (key) {
+        case 'P':
+            // Pause/Resume
+            if (currentTask?.status === 'paused' || currentTask?.status === 'awaiting_approval') {
+                document.getElementById('btn-resume').click();
+            } else {
+                document.getElementById('btn-pause').click();
+            }
+            break;
+        case 'A':
+            // Approve
+            if (!document.getElementById('btn-approve').disabled) {
+                document.getElementById('btn-approve').click();
+            }
+            break;
+        case 'R':
+            // Retry
+            if (document.getElementById('btn-retry').style.display !== 'none') {
+                document.getElementById('btn-retry').click();
+            }
+            break;
+        case 'C':
+            // Cancel (with confirmation)
+            document.getElementById('btn-cancel').click();
+            break;
+        case 'E':
+            // Edit Plan
+            openPlanEditor();
+            break;
+    }
 });
 
 // Initialize

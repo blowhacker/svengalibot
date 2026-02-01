@@ -3,11 +3,17 @@
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Optional
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
+
+# Retry configuration
+MAX_API_RETRIES = 3
+RETRY_DELAY_SECONDS = 5
+RETRY_BACKOFF_MULTIPLIER = 2
 
 
 class Manager:
@@ -71,8 +77,12 @@ class Manager:
 
         raise ValueError(f"Could not extract JSON from response: {text[:200]}...")
 
-    def _call_api(self, messages: list[dict], temperature: float = 1.0) -> str:
-        """Make an API call to OpenAI."""
+    def _call_api(self, messages: list[dict], temperature: float = 1.0) -> tuple[str, dict]:
+        """Make an API call to OpenAI with automatic retry on transient failures.
+
+        Returns:
+            Tuple of (content, usage_info) where usage_info contains token counts and cost.
+        """
         # o1 models don't support temperature parameter
         kwargs = {
             "model": self.model,
@@ -83,19 +93,69 @@ class Manager:
         if not self.model.startswith("o1"):
             kwargs["temperature"] = temperature
 
-        logger.info(f"Calling OpenAI API with model: {self.model}")
-        response = self.client.chat.completions.create(**kwargs)
-        content = response.choices[0].message.content
-        logger.debug(f"OpenAI response (first 500 chars): {content[:500] if content else 'None'}")
-        return content
+        delay = RETRY_DELAY_SECONDS
+        last_error = None
+
+        for attempt in range(MAX_API_RETRIES):
+            try:
+                logger.info(f"Calling OpenAI API with model: {self.model} (attempt {attempt + 1}/{MAX_API_RETRIES})")
+                response = self.client.chat.completions.create(**kwargs)
+                content = response.choices[0].message.content
+                logger.debug(f"OpenAI response (first 500 chars): {content[:500] if content else 'None'}")
+
+                # Extract usage info
+                usage_info = {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "cost": 0.0,
+                }
+                if response.usage:
+                    usage_info["prompt_tokens"] = response.usage.prompt_tokens or 0
+                    usage_info["completion_tokens"] = response.usage.completion_tokens or 0
+                    usage_info["total_tokens"] = response.usage.total_tokens or 0
+                    # Estimate cost (approximate rates for GPT-4 class models)
+                    # These rates should be configured but using defaults for now
+                    prompt_cost = usage_info["prompt_tokens"] * 0.00003  # $0.03 per 1K
+                    completion_cost = usage_info["completion_tokens"] * 0.00006  # $0.06 per 1K
+                    usage_info["cost"] = prompt_cost + completion_cost
+
+                return content, usage_info
+
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+
+                # Check if this is a retryable error
+                is_retryable = any(term in error_str for term in [
+                    'rate limit', 'timeout', 'connection', 'server error',
+                    '503', '502', '500', '429', 'overloaded', 'capacity',
+                    'temporarily', 'try again'
+                ])
+
+                if is_retryable and attempt < MAX_API_RETRIES - 1:
+                    logger.warning(f"API call failed (attempt {attempt + 1}): {e}. Retrying in {delay}s...")
+                    time.sleep(delay)
+                    delay *= RETRY_BACKOFF_MULTIPLIER
+                else:
+                    # Non-retryable error or last attempt
+                    logger.error(f"API call failed after {attempt + 1} attempts: {e}")
+                    raise
+
+        # Should not reach here, but just in case
+        raise last_error or Exception("API call failed after all retries")
 
     def plan_task(
         self,
         description: str,
         guide: dict,
         context: str = "",
-    ) -> dict:
-        """Break a task into implementable chunks."""
+    ) -> tuple[dict, dict]:
+        """Break a task into implementable chunks.
+
+        Returns:
+            Tuple of (plan_dict, usage_info)
+        """
         prompt_template = self._load_prompt("plan")
 
         # Format guide as readable text
@@ -108,9 +168,9 @@ class Manager:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = self._call_api(messages)
+        response, usage = self._call_api(messages)
 
-        return self._extract_json(response)
+        return self._extract_json(response), usage
 
     def review_chunk(
         self,
@@ -118,8 +178,12 @@ class Manager:
         diff: str,
         worker_summary: str,
         guide: dict,
-    ) -> dict:
-        """Review code changes against specification and guide."""
+    ) -> tuple[dict, dict]:
+        """Review code changes against specification and guide.
+
+        Returns:
+            Tuple of (review_dict, usage_info)
+        """
         prompt_template = self._load_prompt("review")
 
         guide_text = self._format_guide(guide)
@@ -134,12 +198,16 @@ class Manager:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = self._call_api(messages)
+        response, usage = self._call_api(messages)
 
-        return self._extract_json(response)
+        return self._extract_json(response), usage
 
-    def research(self, query: str, context: str = "") -> dict:
-        """Research a topic for verification or information gathering."""
+    def research(self, query: str, context: str = "") -> tuple[dict, dict]:
+        """Research a topic for verification or information gathering.
+
+        Returns:
+            Tuple of (research_dict, usage_info)
+        """
         prompt_template = self._load_prompt("research")
 
         prompt = prompt_template.format(
@@ -148,17 +216,21 @@ class Manager:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = self._call_api(messages)
+        response, usage = self._call_api(messages)
 
-        return self._extract_json(response)
+        return self._extract_json(response), usage
 
     def design_tests(
         self,
         chunk_spec: dict,
         implementation_summary: str,
         diff: str,
-    ) -> dict:
-        """Design tests for implemented code."""
+    ) -> tuple[dict, dict]:
+        """Design tests for implemented code.
+
+        Returns:
+            Tuple of (tests_dict, usage_info)
+        """
         prompt_template = self._load_prompt("test")
 
         prompt = prompt_template.format(
@@ -168,16 +240,20 @@ class Manager:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = self._call_api(messages)
+        response, usage = self._call_api(messages)
 
-        return self._extract_json(response)
+        return self._extract_json(response), usage
 
     def reconsider_with_rebuttal(
         self,
         original_review: dict,
         worker_response: str,
-    ) -> dict:
-        """Reconsider a review decision after hearing the worker's perspective."""
+    ) -> tuple[dict, dict]:
+        """Reconsider a review decision after hearing the worker's perspective.
+
+        Returns:
+            Tuple of (reconsideration_dict, usage_info)
+        """
         prompt_template = self._load_prompt("reconsider")
 
         issues_text = "\n".join(
@@ -192,9 +268,9 @@ class Manager:
         )
 
         messages = [{"role": "user", "content": prompt}]
-        response = self._call_api(messages)
+        response, usage = self._call_api(messages)
 
-        return self._extract_json(response)
+        return self._extract_json(response), usage
 
     def summarize_feedback(self, review: dict) -> str:
         """Create a concise summary of review feedback for retry attempts."""
@@ -231,11 +307,14 @@ class Manager:
         chunk_spec: dict,
         attempt_history: list[dict],
         guide: dict,
-    ) -> str:
+    ) -> tuple[str, dict]:
         """Get detailed step-by-step remediation after multiple failures.
 
         This is called after 3+ failed attempts to get very specific
         instructions for what needs to change.
+
+        Returns:
+            Tuple of (remediation_text, usage_info)
         """
         guide_text = self._format_guide(guide)
         criteria_text = "\n".join(f"- {c}" for c in chunk_spec.get("acceptance_criteria", []))
@@ -288,9 +367,9 @@ Provide:
 Be extremely specific and actionable. The next attempt MUST succeed."""
 
         messages = [{"role": "user", "content": prompt}]
-        response = self._call_api(messages)
+        response, usage = self._call_api(messages)
 
-        return response
+        return response, usage
 
     def _format_guide(self, guide: dict) -> str:
         """Format guide dict as readable text."""

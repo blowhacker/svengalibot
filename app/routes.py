@@ -364,13 +364,40 @@ def retry_chunk(project_name, task_id):
 
 @main_bp.route("/project/<project_name>/task/<task_id>/plan", methods=["PUT"])
 def update_plan(project_name, task_id):
-    """Edit plan mid-execution."""
+    """Edit plan mid-execution with validation."""
+    from app.state import ChunkStatus
+
     data = request.get_json()
     if not data:
         return jsonify({"error": "Plan data required"}), 400
 
-    orchestrator = get_orchestrator()
-    orchestrator.update_plan(project_name, task_id, data)
+    # Get current task state for validation
+    state = get_state_manager_for_project(project_name)
+    if not state:
+        return jsonify({"error": "Project not found"}), 404
+
+    task = state.get_task(task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+
+    # Validate: can't un-approve or reset completed chunks
+    existing_approved = {c.id for c in task.chunks if c.status == ChunkStatus.APPROVED}
+    new_chunks = data.get("chunks", [])
+
+    errors = []
+    for chunk_data in new_chunks:
+        chunk_id = f"chunk_{chunk_data['id']:03d}"
+        if chunk_id in existing_approved:
+            # Check if trying to reset status of approved chunk
+            if chunk_data.get("status") and chunk_data.get("status") != "approved":
+                errors.append(f"Cannot reset status of completed chunk {chunk_id}")
+
+    if errors:
+        return jsonify({"error": "Validation failed", "details": errors}), 400
+
+    # Update plan with preserve_state=True to keep existing chunk progress
+    state.set_plan(task_id, data, preserve_state=True)
+
     return jsonify({"status": "updated"})
 
 

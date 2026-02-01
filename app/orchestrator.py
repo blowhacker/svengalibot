@@ -10,7 +10,7 @@ from typing import Optional, Callable
 from dataclasses import dataclass
 from enum import Enum
 
-from app.state import ProjectManager, Project, StateManager, Task, TaskStatus, ChunkStatus
+from app.state import ProjectManager, Project, StateManager, Task, TaskStatus, ChunkStatus, TaskPhase
 from app.manager import Manager
 from app.worker import Worker, WorkerResult
 
@@ -38,6 +38,7 @@ class EventType(Enum):
     TASK_FAILED = "task_failed"
     TASK_PAUSED = "task_paused"
     TASK_CANCELLED = "task_cancelled"
+    USAGE_UPDATE = "usage_update"
     ERROR = "error"
 
 
@@ -86,6 +87,19 @@ class Orchestrator:
     def _emit(self, event: Event):
         """Emit an event to subscribers."""
         self._event_queue.put(event)
+
+    def _emit_usage_update(self, task_id: str, project_name: str, state: StateManager):
+        """Emit a usage update event."""
+        task = state.get_task(task_id)
+        if task:
+            self._emit(Event(
+                type=EventType.USAGE_UPDATE,
+                task_id=task_id,
+                data={
+                    "project": project_name,
+                    "usage": task.usage.to_dict(),
+                },
+            ))
 
     def _dispatch_events(self):
         """Dispatch events to subscribers."""
@@ -181,25 +195,40 @@ class Orchestrator:
             return
 
         state.update_task(task_id, status=TaskStatus.PLANNING)
+        state.set_phase(task_id, TaskPhase.PLANNING)
         self._emit(Event(type=EventType.TASK_PLANNING, task_id=task_id, data={"project": project.name}))
 
         guide = self._load_guide(project)
 
-        # Get codebase context from project workspace
-        self._emit(Event(
-            type=EventType.MANAGER_THINKING,
-            task_id=task_id,
-            data={"project": project.name, "message": "Analyzing codebase context..."},
-        ))
-        context = self._get_codebase_context(project)
+        # Check for cached plan first (recovery from crash)
+        cached_plan = state.get_cached_response(task_id, "plan")
+        if cached_plan:
+            logger.info(f"Using cached plan for task {task_id}")
+            plan = cached_plan
+            state.clear_cached_response(task_id, "plan")
+        else:
+            # Get codebase context from project workspace
+            self._emit(Event(
+                type=EventType.MANAGER_THINKING,
+                task_id=task_id,
+                data={"project": project.name, "message": "Analyzing codebase context..."},
+            ))
+            context = self._get_codebase_context(project)
 
-        # Get plan from manager
-        self._emit(Event(
-            type=EventType.MANAGER_THINKING,
-            task_id=task_id,
-            data={"project": project.name, "message": "Calling OpenAI to create execution plan..."},
-        ))
-        plan = self.manager.plan_task(task.description, guide, context)
+            # Get plan from manager
+            self._emit(Event(
+                type=EventType.MANAGER_THINKING,
+                task_id=task_id,
+                data={"project": project.name, "message": "Calling OpenAI to create execution plan..."},
+            ))
+            plan, usage = self.manager.plan_task(task.description, guide, context)
+
+            # Track usage
+            state.update_usage(task_id, usage["prompt_tokens"], usage["completion_tokens"], usage["cost"])
+            self._emit_usage_update(task_id, project.name, state)
+
+            # Cache the plan immediately in case of crash
+            state.cache_manager_response(task_id, "plan", plan)
 
         self._emit(Event(
             type=EventType.MANAGER_RESPONSE,
@@ -215,7 +244,9 @@ class Orchestrator:
                     task_id=task_id,
                     data={"project": project.name, "topic": topic},
                 ))
-                research_result = self.manager.research(topic, task.description)
+                research_result, usage = self.manager.research(topic, task.description)
+                state.update_usage(task_id, usage["prompt_tokens"], usage["completion_tokens"], usage["cost"])
+                self._emit_usage_update(task_id, project.name, state)
                 self._emit(Event(
                     type=EventType.RESEARCH_COMPLETED,
                     task_id=task_id,
@@ -225,6 +256,9 @@ class Orchestrator:
 
         # Update task with plan
         state.set_plan(task_id, plan)
+        state.set_phase(task_id, TaskPhase.PLANNED)
+        # Clear the cache now that plan is applied
+        state.clear_cached_response(task_id, "plan")
 
         self._emit(Event(
             type=EventType.TASK_PLANNED,
@@ -236,6 +270,8 @@ class Orchestrator:
         """Execute all chunks in order."""
         state = self.project_manager.get_state_manager(project)
         task_key = self._task_key(project.name, task_id)
+
+        state.set_phase(task_id, TaskPhase.EXECUTING)
 
         while True:
             if self._should_stop(task_key):
@@ -250,6 +286,18 @@ class Orchestrator:
                     state.update_task(task_id, status=TaskStatus.DONE)
                     self._emit(Event(type=EventType.TASK_COMPLETED, task_id=task_id, data={"project": project.name}))
                 return
+
+            # Check if chunk is marked as skipped
+            if chunk.skipped:
+                logger.info(f"Skipping chunk {chunk.id} (marked as skipped)")
+                state.update_chunk(task_id, chunk.id, status=ChunkStatus.APPROVED)
+                self._emit(Event(
+                    type=EventType.CHUNK_APPROVED,
+                    task_id=task_id,
+                    chunk_id=chunk.id,
+                    data={"project": project.name, "skipped": True},
+                ))
+                continue
 
             # Execute chunk in project workspace
             success = self._execute_chunk(project, task_id, chunk.id)
@@ -312,7 +360,7 @@ class Orchestrator:
                         "message": f"Attempt {attempt_num + 1}: Getting detailed remediation plan from manager...",
                     },
                 ))
-                previous_feedback = self.manager.get_detailed_remediation(
+                previous_feedback, usage = self.manager.get_detailed_remediation(
                     chunk_spec={
                         "title": chunk.title,
                         "description": chunk.description,
@@ -321,6 +369,8 @@ class Orchestrator:
                     attempt_history=attempt_history,
                     guide=guide,
                 )
+                state.update_usage(task_id, usage["prompt_tokens"], usage["completion_tokens"], usage["cost"])
+                self._emit_usage_update(task_id, project.name, state)
                 self._emit(Event(
                     type=EventType.MANAGER_RESPONSE,
                     task_id=task_id,
@@ -411,12 +461,14 @@ class Orchestrator:
                 data={"project": project.name},
             ))
 
-            review = self.manager.review_chunk(
+            review, usage = self.manager.review_chunk(
                 chunk_spec,
                 result.diff,
                 result.summary,
                 guide,
             )
+            state.update_usage(task_id, usage["prompt_tokens"], usage["completion_tokens"], usage["cost"])
+            self._emit_usage_update(task_id, project.name, state)
 
             # Auto-approve if no critical issues (manager might be overly strict)
             issues = review.get("issues", [])
@@ -479,7 +531,9 @@ class Orchestrator:
                         data={"project": project.name, "message": "Manager reconsidering with Claude's input..."},
                     ))
 
-                    reconsideration = self.manager.reconsider_with_rebuttal(review, worker_clarification)
+                    reconsideration, usage = self.manager.reconsider_with_rebuttal(review, worker_clarification)
+                    state.update_usage(task_id, usage["prompt_tokens"], usage["completion_tokens"], usage["cost"])
+                    self._emit_usage_update(task_id, project.name, state)
 
                     if reconsideration.get("final_decision") == "approved":
                         self._emit(Event(
@@ -599,7 +653,7 @@ class Orchestrator:
             self._emit(Event(type=EventType.TASK_PAUSED, task_id=task_id, data={"project": project_name}))
 
     def resume_task(self, project_name: str, task_id: str):
-        """Resume a paused task."""
+        """Resume a paused task intelligently based on phase."""
         task_key = self._task_key(project_name, task_id)
         self._paused_tasks.discard(task_key)
 
@@ -609,8 +663,39 @@ class Orchestrator:
 
         state = self.project_manager.get_state_manager(project)
         task = state.get_task(task_id)
-        if task and task.status == TaskStatus.PAUSED:
-            # Restart processing
+        if not task:
+            return
+
+        # Only resume if task is actually paused or awaiting approval
+        if task.status not in (TaskStatus.PAUSED, TaskStatus.AWAITING_APPROVAL):
+            return
+
+        # Smart resume: check if we have a plan already
+        if task.plan and task.chunks:
+            # Plan exists - continue execution from where we left off
+            logger.info(f"Resume: Task {task_id} has plan, continuing execution")
+            self._continue_task(project, task_id)
+        elif task.phase == TaskPhase.PLANNING:
+            # Was in the middle of planning - check for cached plan
+            cached_plan = state.get_cached_response(task_id, "plan")
+            if cached_plan:
+                logger.info(f"Resume: Found cached plan for {task_id}, applying it")
+                state.set_plan(task_id, cached_plan)
+                state.clear_cached_response(task_id, "plan")
+                self._continue_task(project, task_id)
+            else:
+                # Need to replan
+                logger.info(f"Resume: Task {task_id} needs replanning")
+                thread = threading.Thread(
+                    target=self._process_task,
+                    args=(project, task_id),
+                    daemon=True,
+                )
+                self._task_threads[task_key] = thread
+                thread.start()
+        else:
+            # No plan yet - start from scratch
+            logger.info(f"Resume: Task {task_id} has no plan, starting fresh")
             thread = threading.Thread(
                 target=self._process_task,
                 args=(project, task_id),

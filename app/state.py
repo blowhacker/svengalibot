@@ -26,6 +26,48 @@ class TaskStatus(Enum):
     AWAITING_APPROVAL = "awaiting_approval"
 
 
+class TaskPhase(Enum):
+    """Fine-grained phase tracking for resume functionality."""
+    CREATED = "created"
+    PLANNING = "planning"
+    PLANNED = "planned"
+    EXECUTING = "executing"
+    REVIEWING = "reviewing"
+
+
+@dataclass
+class TokenUsage:
+    """Token usage and cost tracking."""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost: float = 0.0
+
+    def add(self, prompt: int, completion: int, cost: float = 0.0):
+        """Add usage from an API call."""
+        self.prompt_tokens += prompt
+        self.completion_tokens += completion
+        self.total_tokens += prompt + completion
+        self.cost += cost
+
+    def to_dict(self):
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "cost": self.cost,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TokenUsage":
+        return cls(
+            prompt_tokens=data.get("prompt_tokens", 0),
+            completion_tokens=data.get("completion_tokens", 0),
+            total_tokens=data.get("total_tokens", 0),
+            cost=data.get("cost", 0.0),
+        )
+
+
 class ChunkStatus(Enum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
@@ -58,6 +100,7 @@ class Chunk:
     current_attempt: Optional[str] = None
     files_affected: list[str] = field(default_factory=list)
     baseline_commit: Optional[str] = None  # Git commit hash before first attempt
+    skipped: bool = False  # If True, mark as APPROVED without executing
 
     def to_dict(self):
         d = asdict(self)
@@ -76,6 +119,8 @@ class Chunk:
             Attempt(**a) if isinstance(a, dict) else a
             for a in data.get("attempts", [])
         ]
+        # Backwards compatibility: default skipped to False
+        data.setdefault("skipped", False)
         return cls(**data)
 
 
@@ -91,6 +136,11 @@ class Task:
     current_chunk: Optional[str] = None
     error: Optional[str] = None
     human_approved: bool = False
+    # New fields for resume functionality
+    phase: TaskPhase = TaskPhase.CREATED
+    checkpoint: Optional[dict] = None  # Recovery info (e.g., last completed step)
+    usage: TokenUsage = field(default_factory=TokenUsage)
+    cached_responses: dict = field(default_factory=dict)  # Cache for manager API responses
 
     def to_dict(self):
         return {
@@ -104,6 +154,10 @@ class Task:
             "current_chunk": self.current_chunk,
             "error": self.error,
             "human_approved": self.human_approved,
+            "phase": self.phase.value,
+            "checkpoint": self.checkpoint,
+            "usage": self.usage.to_dict(),
+            "cached_responses": self.cached_responses,
         }
 
     @classmethod
@@ -114,6 +168,30 @@ class Task:
             Chunk.from_dict(c) if isinstance(c, dict) else c
             for c in data.get("chunks", [])
         ]
+        # Backwards compatibility: default phase based on status
+        if "phase" in data:
+            data["phase"] = TaskPhase(data["phase"])
+        else:
+            # Infer phase from status for old tasks
+            status = data["status"]
+            if status == TaskStatus.PLANNING:
+                data["phase"] = TaskPhase.PLANNING
+            elif status in (TaskStatus.EXECUTING, TaskStatus.AWAITING_APPROVAL):
+                data["phase"] = TaskPhase.EXECUTING
+            elif status == TaskStatus.REVIEWING:
+                data["phase"] = TaskPhase.REVIEWING
+            elif status == TaskStatus.DONE:
+                data["phase"] = TaskPhase.EXECUTING  # Completed
+            else:
+                data["phase"] = TaskPhase.CREATED
+        # Backwards compatibility: default usage to empty
+        if "usage" in data:
+            data["usage"] = TokenUsage.from_dict(data["usage"])
+        else:
+            data["usage"] = TokenUsage()
+        # Backwards compatibility: default cached_responses to empty
+        data.setdefault("cached_responses", {})
+        data.setdefault("checkpoint", None)
         return cls(**data)
 
     @property
@@ -385,25 +463,63 @@ class StateManager:
                     tasks.append(task)
         return sorted(tasks, key=lambda t: t.created_at, reverse=True)
 
-    def set_plan(self, task_id: str, plan: dict) -> Optional[Task]:
-        """Set the task plan and create chunks."""
+    def set_plan(self, task_id: str, plan: dict, preserve_state: bool = False) -> Optional[Task]:
+        """Set the task plan and create/update chunks.
+
+        Args:
+            task_id: The task ID
+            plan: The plan dict containing chunks
+            preserve_state: If True, preserve existing chunk status/attempts when editing.
+                          Useful when user edits the plan mid-execution.
+        """
         task = self.get_task(task_id)
         if not task:
             return None
 
+        # Build lookup of existing chunks for preserve_state mode
+        existing_chunks = {}
+        if preserve_state and task.chunks:
+            for chunk in task.chunks:
+                existing_chunks[chunk.id] = chunk
+
         task.plan = plan
-        task.chunks = []
+        new_chunks = []
 
         for chunk_data in plan.get("chunks", []):
-            chunk = Chunk(
-                id=f"chunk_{chunk_data['id']:03d}",
-                title=chunk_data.get("title", ""),
-                description=chunk_data.get("description", ""),
-                acceptance_criteria=chunk_data.get("acceptance_criteria", []),
-                depends_on=chunk_data.get("depends_on", []),
-                files_affected=chunk_data.get("files_likely_affected", []),
-            )
-            task.chunks.append(chunk)
+            chunk_id = f"chunk_{chunk_data['id']:03d}"
+
+            # Check if chunk already exists and we should preserve state
+            if preserve_state and chunk_id in existing_chunks:
+                existing = existing_chunks[chunk_id]
+                # Update content but preserve execution state
+                existing.title = chunk_data.get("title", existing.title)
+                existing.description = chunk_data.get("description", existing.description)
+                existing.acceptance_criteria = chunk_data.get("acceptance_criteria", existing.acceptance_criteria)
+                existing.depends_on = chunk_data.get("depends_on", existing.depends_on)
+                existing.files_affected = chunk_data.get("files_likely_affected", existing.files_affected)
+                # Allow setting skipped flag
+                existing.skipped = chunk_data.get("skipped", existing.skipped)
+                # If marked as skipped and not yet approved, mark as approved
+                if existing.skipped and existing.status == ChunkStatus.PENDING:
+                    existing.status = ChunkStatus.APPROVED
+                new_chunks.append(existing)
+            else:
+                # Create new chunk
+                skipped = chunk_data.get("skipped", False)
+                chunk = Chunk(
+                    id=chunk_id,
+                    title=chunk_data.get("title", ""),
+                    description=chunk_data.get("description", ""),
+                    acceptance_criteria=chunk_data.get("acceptance_criteria", []),
+                    depends_on=chunk_data.get("depends_on", []),
+                    files_affected=chunk_data.get("files_likely_affected", []),
+                    skipped=skipped,
+                    # If skipped, mark as approved immediately
+                    status=ChunkStatus.APPROVED if skipped else ChunkStatus.PENDING,
+                )
+                new_chunks.append(chunk)
+
+        task.chunks = new_chunks
 
         # Save plan to file
         plan_path = self._task_dir(task_id) / "plan.json"
@@ -563,3 +679,56 @@ class StateManager:
             shutil.rmtree(task_dir)
             return True
         return False
+
+    def cache_manager_response(self, task_id: str, key: str, response: dict) -> bool:
+        """Cache a manager API response for recovery after crashes."""
+        task = self.get_task(task_id)
+        if not task:
+            return False
+        task.cached_responses[key] = response
+        self._save_task(task)
+        return True
+
+    def get_cached_response(self, task_id: str, key: str) -> Optional[dict]:
+        """Get a cached manager response."""
+        task = self.get_task(task_id)
+        if not task:
+            return None
+        return task.cached_responses.get(key)
+
+    def clear_cached_response(self, task_id: str, key: str) -> bool:
+        """Clear a cached response after successful processing."""
+        task = self.get_task(task_id)
+        if not task:
+            return False
+        if key in task.cached_responses:
+            del task.cached_responses[key]
+            self._save_task(task)
+        return True
+
+    def update_usage(self, task_id: str, prompt_tokens: int, completion_tokens: int, cost: float = 0.0) -> Optional[Task]:
+        """Update token usage for a task."""
+        task = self.get_task(task_id)
+        if not task:
+            return None
+        task.usage.add(prompt_tokens, completion_tokens, cost)
+        self._save_task(task)
+        return task
+
+    def set_phase(self, task_id: str, phase: TaskPhase) -> Optional[Task]:
+        """Update the task phase."""
+        task = self.get_task(task_id)
+        if not task:
+            return None
+        task.phase = phase
+        self._save_task(task)
+        return task
+
+    def set_checkpoint(self, task_id: str, checkpoint: dict) -> Optional[Task]:
+        """Set recovery checkpoint."""
+        task = self.get_task(task_id)
+        if not task:
+            return None
+        task.checkpoint = checkpoint
+        self._save_task(task)
+        return task

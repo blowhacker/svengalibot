@@ -552,3 +552,281 @@ textarea:focus {
     min-height: 200px;
     overflow-y: auto;
 }
+
+/* ============================================
+   Pipeline Visualization
+   ============================================ */
+.pipeline-track {
+    display: flex;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    overflow-x: auto;
+    gap: 0;
+}
+
+.pipeline-empty {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.pipeline-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 40px;
+}
+
+.pipeline-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--bg);
+    border: 2px solid var(--border);
+    transition: all 0.3s ease;
+}
+
+.pipeline-label {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+}
+
+.pipeline-connector {
+    flex: 1;
+    min-width: 20px;
+    height: 2px;
+    background: var(--border);
+    margin: 0 2px;
+    margin-bottom: 1rem;
+}
+
+/* Pipeline status colors */
+.pipeline-step.pending .pipeline-dot {
+    background: var(--bg);
+    border-color: var(--border);
+}
+
+.pipeline-step.in_progress .pipeline-dot {
+    background: var(--warning);
+    border-color: var(--warning);
+    animation: pipeline-pulse 1.5s ease-in-out infinite;
+}
+
+.pipeline-step.review .pipeline-dot {
+    background: #a371f7;
+    border-color: #a371f7;
+}
+
+.pipeline-step.approved .pipeline-dot {
+    background: var(--success);
+    border-color: var(--success);
+}
+
+.pipeline-step.rejected .pipeline-dot,
+.pipeline-step.failed .pipeline-dot {
+    background: var(--danger);
+    border-color: var(--danger);
+}
+
+.pipeline-step.skipped .pipeline-dot {
+    background: var(--text-muted);
+    border-color: var(--text-muted);
+}
+
+@keyframes pipeline-pulse {
+    0%, 100% {
+        transform: scale(1);
+        box-shadow: 0 0 0 0 rgba(210, 153, 34, 0.4);
+    }
+    50% {
+        transform: scale(1.2);
+        box-shadow: 0 0 0 6px rgba(210, 153, 34, 0);
+    }
+}
+
+/* ============================================
+   Keyboard Shortcuts Hint
+   ============================================ */
+.shortcuts-hint {
+    display: flex;
+    gap: 1rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-secondary);
+    border-radius: 6px;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    flex-wrap: wrap;
+}
+
+.shortcut-key {
+    display: inline-block;
+    padding: 0.1rem 0.4rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-family: 'Fira Code', monospace;
+    font-weight: 600;
+    margin-right: 0.25rem;
+}
+
+/* ============================================
+   Cost Badge
+   ============================================ */
+.task-badges {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.cost-badge {
+    display: inline-block;
+    padding: 0.2rem 0.5rem;
+    background: #238636;
+    color: white;
+    border-radius: 12px;
+    font-size: 0.65rem;
+    font-weight: 500;
+    cursor: help;
+}
+
+/* ============================================
+   Plan Editor Modal
+   ============================================ */
+.plan-editor-content {
+    max-width: 700px;
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.modal-hint {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-bottom: 1rem;
+}
+
+.plan-editor-chunks {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    max-height: 50vh;
+    overflow-y: auto;
+}
+
+.plan-chunk-editor {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75rem;
+    transition: all 0.2s ease;
+}
+
+.plan-chunk-editor.completed {
+    opacity: 0.7;
+    background: rgba(63, 185, 80, 0.1);
+    border-color: var(--success);
+}
+
+.plan-chunk-editor.skipped {
+    opacity: 0.6;
+    background: rgba(139, 148, 158, 0.1);
+}
+
+.plan-chunk-editor.dragging {
+    opacity: 0.5;
+    border-style: dashed;
+}
+
+.plan-chunk-editor.drag-over {
+    border-color: var(--primary);
+    border-style: dashed;
+}
+
+.chunk-editor-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.chunk-drag-handle {
+    cursor: grab;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    user-select: none;
+}
+
+.plan-chunk-editor.completed .chunk-drag-handle {
+    cursor: default;
+    color: var(--success);
+}
+
+.chunk-editor-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 0.25rem;
+}
+
+.completed-badge {
+    font-size: 0.65rem;
+    padding: 0.1rem 0.4rem;
+    background: var(--success);
+    color: white;
+    border-radius: 3px;
+}
+
+.skip-badge {
+    font-size: 0.65rem;
+    padding: 0.1rem 0.4rem;
+    background: var(--text-muted);
+    color: white;
+    border-radius: 3px;
+}
+
+.btn-skip {
+    background: var(--bg-secondary);
+}
+
+.chunk-editor-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.chunk-title-input {
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+.chunk-desc-input {
+    min-height: 60px;
+    font-size: 0.85rem;
+}
+
+.chunk-criteria label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-bottom: 0.25rem;
+    display: block;
+}
+
+.chunk-criteria-input {
+    min-height: 50px;
+    font-size: 0.8rem;
+}
+
+.plan-editor-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-top: 1px solid var(--border);
+    padding-top: 1rem;
+}
+
+/* Override modal input styles for plan editor */
+.plan-chunk-editor input,
+.plan-chunk-editor textarea {
+    margin-bottom: 0;
+}
