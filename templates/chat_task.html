@@ -397,6 +397,12 @@ function handleStreamEvent(data) {
             loadTask();
             break;
 
+        case 'files_changed':
+            // Auto-refresh file tree when files change
+            console.log('Files changed:', data.data?.files);
+            loadFileTree();
+            break;
+
         case 'usage_update':
             // Could show cost badge here
             break;

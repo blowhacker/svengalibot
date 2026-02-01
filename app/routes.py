@@ -1055,12 +1055,23 @@ def _run_collaboration(project_name: str, task_id: str, app, orchestrator, proje
             if worker_output.get("paused"):
                 return  # Task was paused
 
-            # Add worker message
+            # Add worker message with files changed info
+            files_changed = worker_output.get("files_changed", [])
+            content = worker_output.get("summary", "") or worker_output.get("output", "")
+
+            # Prepend files changed if any
+            if files_changed:
+                files_list = "\n".join(f"- `{f}`" for f in files_changed)
+                content = f"**Files written:**\n{files_list}\n\n{content}"
+
             worker_msg = task.add_message(
                 role="worker",
-                content=worker_output.get("summary", "") or worker_output.get("output", ""),
+                content=content,
                 provider="claude",
-                metadata={"diff": worker_output.get("diff", "")},
+                metadata={
+                    "diff": worker_output.get("diff", ""),
+                    "files_changed": files_changed,
+                },
             )
             _save_collab_task_direct(project, task)
 
@@ -1166,6 +1177,26 @@ def _run_collaboration(project_name: str, task_id: str, app, orchestrator, proje
         })
 
 
+def _extract_files_from_diff(diff: str) -> list[str]:
+    """Extract list of changed file paths from a git diff."""
+    import re
+    files = set()
+    if not diff:
+        return []
+
+    # Match diff --git a/path b/path
+    for match in re.finditer(r'diff --git a/(.+?) b/', diff):
+        files.add(match.group(1))
+
+    # Also match +++ b/path for new files
+    for match in re.finditer(r'\+\+\+ b/(.+)', diff):
+        path = match.group(1).strip()
+        if path and path != '/dev/null':
+            files.add(path)
+
+    return sorted(files)
+
+
 def _load_guide_for_project(project) -> dict:
     """Load guide for a project (requires Flask context)."""
     guide_path = current_app.config["GUIDE_PATH"]
@@ -1258,12 +1289,24 @@ Be substantive and make real progress each iteration.""",
 
     logger.info(f"Worker finished. Success: {result.success}, Output lines: {len(output_buffer)}, Summary: {result.summary[:100] if result.summary else 'None'}...")
 
+    # Extract changed files from diff
+    files_changed = _extract_files_from_diff(result.diff)
+    logger.info(f"Files changed: {files_changed}")
+
+    # Broadcast files changed event for UI auto-refresh
+    if files_changed:
+        _broadcast_collab_event(project.name, task.id, {
+            "type": "files_changed",
+            "data": {"files": files_changed},
+        })
+
     return {
         "success": result.success,
         "output": "".join(output_buffer),
         "diff": result.diff,
         "summary": result.summary,
         "error": result.error,
+        "files_changed": files_changed,
     }
 
 
