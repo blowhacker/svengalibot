@@ -501,13 +501,35 @@ async function openFile(path) {
         }
 
         document.getElementById('file-modal-title').textContent = path;
-        const codeEl = document.querySelector('#file-content code');
-        codeEl.textContent = data.content;
-        codeEl.className = 'language-' + (data.extension || 'text');
+        const preEl = document.getElementById('file-content');
+        const codeEl = preEl.querySelector('code');
 
-        // Highlight if hljs available
-        if (window.hljs) {
-            hljs.highlightElement(codeEl);
+        // Render markdown files with marked.js
+        if (data.extension === 'md' || data.extension === 'markdown') {
+            preEl.style.display = 'none';
+            // Create or get markdown container
+            let mdContainer = document.getElementById('file-markdown');
+            if (!mdContainer) {
+                mdContainer = document.createElement('div');
+                mdContainer.id = 'file-markdown';
+                mdContainer.className = 'markdown-body file-markdown-view';
+                preEl.parentNode.insertBefore(mdContainer, preEl.nextSibling);
+            }
+            mdContainer.innerHTML = marked.parse(data.content);
+            mdContainer.style.display = 'block';
+        } else {
+            // Show as code
+            let mdContainer = document.getElementById('file-markdown');
+            if (mdContainer) mdContainer.style.display = 'none';
+            preEl.style.display = 'block';
+
+            codeEl.textContent = data.content;
+            codeEl.className = 'language-' + (data.extension || 'text');
+
+            // Highlight if hljs available
+            if (window.hljs) {
+                hljs.highlightElement(codeEl);
+            }
         }
 
         document.getElementById('file-modal').style.display = 'flex';
@@ -650,6 +672,13 @@ connectStream();
     overflow: auto;
     margin: 0;
     font-size: 0.85em;
+}
+.file-markdown-view {
+    max-height: 70vh;
+    overflow: auto;
+    padding: 1em;
+    background: #1a1a2e;
+    border-radius: 4px;
 }
 
 /* Refresh button */
