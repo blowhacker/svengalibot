@@ -30,6 +30,7 @@
                 <button id="btn-close-viewer" class="btn-icon" title="Close">×</button>
             </div>
             <pre id="file-viewer-content" class="file-viewer-content"></pre>
+            <div id="file-viewer-markdown" class="markdown-body file-markdown-view" style="display:none"></div>
         </section>
 
         <!-- New Collaboration Task -->
@@ -75,8 +76,32 @@
 {% endblock %}
 
 {% block scripts %}
+<!-- Marked.js for markdown rendering -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script>
 const projectName = '{{ project_name }}';
+
+// Configure marked if available
+if (typeof marked !== 'undefined') {
+    marked.setOptions({ breaks: true, gfm: true });
+}
+
+function basicMarkdown(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    let html = div.innerHTML;
+    return html
+        .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
+        .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+        .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+        .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.+?)\*/g, '<em>$1</em>')
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/^- (.+)$/gm, '• $1<br>')
+        .replace(/\n\n/g, '<br><br>')
+        .replace(/\n/g, '<br>');
+}
 let expandedDirs = new Set();
 let examplePrompts = [];
 
@@ -311,11 +336,14 @@ async function openFile(path) {
     const viewer = document.getElementById('file-viewer');
     const pathEl = document.getElementById('file-viewer-path');
     const contentEl = document.getElementById('file-viewer-content');
+    const markdownEl = document.getElementById('file-viewer-markdown');
 
     viewer.style.display = 'block';
     pathEl.textContent = path;
     contentEl.textContent = 'Loading...';
     contentEl.className = 'file-viewer-content';
+    contentEl.style.display = 'block';
+    markdownEl.style.display = 'none';
 
     document.querySelectorAll('.tree-file').forEach(el => el.classList.remove('selected'));
     document.querySelector(`.tree-file[data-path="${path}"]`)?.classList.add('selected');
@@ -326,6 +354,15 @@ async function openFile(path) {
 
         if (data.error) {
             contentEl.textContent = `Error: ${data.error}`;
+        } else if (data.extension === 'md' || data.extension === 'markdown') {
+            // Render markdown
+            contentEl.style.display = 'none';
+            markdownEl.style.display = 'block';
+            if (typeof marked !== 'undefined') {
+                markdownEl.innerHTML = marked.parse(data.content);
+            } else {
+                markdownEl.innerHTML = basicMarkdown(data.content);
+            }
         } else {
             const langMap = {
                 'py': 'python',
@@ -338,7 +375,6 @@ async function openFile(path) {
                 'json': 'json',
                 'yaml': 'yaml',
                 'yml': 'yaml',
-                'md': 'markdown',
                 'sh': 'bash',
                 'bash': 'bash',
                 'sql': 'sql',
@@ -386,4 +422,55 @@ loadExamples();
 loadProject();
 loadFileTree();
 </script>
+
+<style>
+.markdown-body {
+    line-height: 1.6;
+    padding: 1em;
+}
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 {
+    margin-top: 0.8em;
+    margin-bottom: 0.4em;
+    font-weight: 600;
+    color: #e0e0e0;
+}
+.markdown-body h1 { font-size: 1.6em; border-bottom: 1px solid #444; padding-bottom: 0.3em; }
+.markdown-body h2 { font-size: 1.4em; }
+.markdown-body h3 { font-size: 1.2em; }
+.markdown-body h4 { font-size: 1.1em; }
+.markdown-body p { margin: 0.6em 0; }
+.markdown-body ul, .markdown-body ol { margin: 0.5em 0; padding-left: 1.5em; }
+.markdown-body li { margin: 0.3em 0; }
+.markdown-body code {
+    background: rgba(255,255,255,0.1);
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+    font-size: 0.9em;
+}
+.markdown-body pre {
+    background: #1a1a2e;
+    padding: 1em;
+    border-radius: 4px;
+    overflow-x: auto;
+    margin: 0.8em 0;
+}
+.markdown-body pre code {
+    background: none;
+    padding: 0;
+}
+.markdown-body blockquote {
+    border-left: 3px solid #666;
+    margin: 0.8em 0;
+    padding-left: 1em;
+    color: #999;
+}
+.markdown-body strong { font-weight: 600; }
+.markdown-body hr { border: none; border-top: 1px solid #444; margin: 1em 0; }
+.file-markdown-view {
+    max-height: 60vh;
+    overflow: auto;
+    background: #1e1e2e;
+    border-radius: 4px;
+}
+</style>
 {% endblock %}
