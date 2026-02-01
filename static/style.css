@@ -688,7 +688,14 @@ textarea:focus {
     border-radius: 12px;
     font-size: 0.65rem;
     font-weight: 500;
-    cursor: help;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background 0.2s;
+}
+
+.cost-badge:hover {
+    background: #2ea043;
+    color: white;
 }
 
 /* ============================================
