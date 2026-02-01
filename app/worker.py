@@ -278,10 +278,12 @@ class Worker:
             return ""
 
     def _get_diff_since_commit(self, commit_hash: str) -> str:
-        """Get diff of all changes since a specific commit."""
+        """Get diff of all changes since a specific commit, including new files."""
         if not commit_hash:
             return ""
         try:
+            diff_parts = []
+
             # Get diff between baseline commit and current HEAD (committed changes)
             result = subprocess.run(
                 ["git", "diff", commit_hash, "HEAD"],
@@ -289,21 +291,49 @@ class Worker:
                 capture_output=True,
                 text=True,
             )
-            committed_diff = result.stdout
+            if result.stdout:
+                diff_parts.append(result.stdout)
 
-            # Also get any uncommitted changes
+            # Get uncommitted changes to tracked files
             result = subprocess.run(
                 ["git", "diff", "HEAD"],
                 cwd=self.workspace_dir,
                 capture_output=True,
                 text=True,
             )
-            uncommitted_diff = result.stdout
+            if result.stdout:
+                diff_parts.append(result.stdout)
 
-            # Combine both (committed changes + any staged/unstaged changes)
-            if uncommitted_diff:
-                return committed_diff + "\n" + uncommitted_diff
-            return committed_diff
+            # Get list of new untracked files (not in git yet)
+            result = subprocess.run(
+                ["git", "ls-files", "--others", "--exclude-standard"],
+                cwd=self.workspace_dir,
+                capture_output=True,
+                text=True,
+            )
+            untracked_files = result.stdout.strip().split("\n") if result.stdout.strip() else []
+
+            # Include content of new files in diff format
+            for filepath in untracked_files:
+                if not filepath:
+                    continue
+                full_path = self.workspace_dir / filepath
+                if full_path.is_file() and full_path.stat().st_size < 50000:  # Skip large files
+                    try:
+                        content = full_path.read_text(encoding="utf-8", errors="replace")
+                        # Format as diff for new file
+                        diff_parts.append(f"diff --git a/{filepath} b/{filepath}")
+                        diff_parts.append(f"new file mode 100644")
+                        diff_parts.append(f"--- /dev/null")
+                        diff_parts.append(f"+++ b/{filepath}")
+                        lines = content.split("\n")
+                        diff_parts.append(f"@@ -0,0 +1,{len(lines)} @@")
+                        for line in lines:
+                            diff_parts.append(f"+{line}")
+                    except Exception as e:
+                        logger.warning(f"Could not read untracked file {filepath}: {e}")
+
+            return "\n".join(diff_parts)
         except Exception as e:
             logger.error(f"Failed to get diff: {e}")
             return ""
