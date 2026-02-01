@@ -3,33 +3,57 @@
 {% block title %}{{ project_name }} - Svengalibot{% endblock %}
 
 {% block content %}
-<div class="project-detail">
-    <header class="project-header">
-        <a href="/" class="back-link">&larr; All Projects</a>
-        <h1 id="project-name">{{ project_name }}</h1>
-        <p id="project-path" class="project-path"></p>
-    </header>
-
-    <section class="new-task">
-        <h2>New Task</h2>
-        <form id="new-task-form">
-            <textarea id="task-description" placeholder="Describe what you want to build or change..." rows="4"></textarea>
-            <button type="submit">Create Task</button>
-        </form>
-    </section>
-
-    <section class="task-list">
-        <h2>Tasks</h2>
-        <div id="tasks-container">
-            <p class="empty-state">No tasks yet. Create one above.</p>
+<div class="project-layout">
+    <!-- Left panel: File Explorer -->
+    <div class="project-sidebar">
+        <div class="sidebar-header">
+            <span class="sidebar-title">Explorer</span>
+            <button id="btn-refresh-files" class="btn-icon" title="Refresh">↻</button>
         </div>
-    </section>
+        <div id="file-tree" class="file-tree">
+            <p class="empty-state">Loading files...</p>
+        </div>
+    </div>
+
+    <!-- Right panel: Main content -->
+    <div class="project-main">
+        <header class="project-header">
+            <a href="/" class="back-link">&larr; All Projects</a>
+            <h1 id="project-name">{{ project_name }}</h1>
+            <p id="project-path" class="project-path"></p>
+        </header>
+
+        <!-- File Viewer (hidden by default) -->
+        <section id="file-viewer" class="file-viewer" style="display:none">
+            <div class="file-viewer-header">
+                <span id="file-viewer-path" class="file-viewer-path"></span>
+                <button id="btn-close-viewer" class="btn-icon" title="Close">×</button>
+            </div>
+            <pre id="file-viewer-content" class="file-viewer-content"></pre>
+        </section>
+
+        <section class="new-task">
+            <h2>New Task</h2>
+            <form id="new-task-form">
+                <textarea id="task-description" placeholder="Describe what you want to build or change..." rows="4"></textarea>
+                <button type="submit">Create Task</button>
+            </form>
+        </section>
+
+        <section class="task-list">
+            <h2>Tasks</h2>
+            <div id="tasks-container">
+                <p class="empty-state">No tasks yet. Create one above.</p>
+            </div>
+        </section>
+    </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
 const projectName = '{{ project_name }}';
+let expandedDirs = new Set();
 
 document.getElementById('new-task-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -85,6 +109,156 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// File tree functions
+async function loadFileTree() {
+    const container = document.getElementById('file-tree');
+    container.innerHTML = '<p class="loading-state">Loading files...</p>';
+
+    try {
+        const response = await fetch(`/project/${projectName}/files`);
+        if (!response.ok) {
+            container.innerHTML = '<p class="empty-state">Failed to load files</p>';
+            return;
+        }
+
+        const data = await response.json();
+        container.innerHTML = renderFileTree(data.tree, 0);
+        attachTreeListeners();
+    } catch (e) {
+        container.innerHTML = '<p class="empty-state">Error loading files</p>';
+    }
+}
+
+function renderFileTree(items, depth) {
+    if (!items || items.length === 0) {
+        return depth === 0 ? '<p class="empty-state">No files</p>' : '';
+    }
+
+    return items.map(item => {
+        const indent = depth * 16;
+        const isExpanded = expandedDirs.has(item.path);
+
+        if (item.type === 'directory') {
+            const hasChildren = item.children && item.children.length > 0;
+            const chevron = hasChildren ? (isExpanded ? '▼' : '▶') : '·';
+            return `
+                <div class="tree-item tree-dir ${isExpanded ? 'expanded' : ''}"
+                     data-path="${escapeHtml(item.path)}"
+                     style="padding-left: ${indent}px">
+                    <span class="tree-chevron">${chevron}</span>
+                    <span class="tree-icon">📁</span>
+                    <span class="tree-name">${escapeHtml(item.name)}</span>
+                </div>
+                <div class="tree-children ${isExpanded ? '' : 'collapsed'}">
+                    ${hasChildren ? renderFileTree(item.children, depth + 1) : ''}
+                </div>
+            `;
+        } else {
+            const icon = getFileIcon(item.extension);
+            return `
+                <div class="tree-item tree-file"
+                     data-path="${escapeHtml(item.path)}"
+                     style="padding-left: ${indent + 16}px">
+                    <span class="tree-icon">${icon}</span>
+                    <span class="tree-name">${escapeHtml(item.name)}</span>
+                </div>
+            `;
+        }
+    }).join('');
+}
+
+function getFileIcon(ext) {
+    const icons = {
+        'py': '🐍',
+        'js': '📜',
+        'ts': '📘',
+        'jsx': '⚛️',
+        'tsx': '⚛️',
+        'html': '🌐',
+        'css': '🎨',
+        'json': '📋',
+        'yaml': '📋',
+        'yml': '📋',
+        'md': '📝',
+        'txt': '📄',
+        'sh': '🔧',
+        'sql': '🗃️',
+        'png': '🖼️',
+        'jpg': '🖼️',
+        'gif': '🖼️',
+        'svg': '🖼️',
+    };
+    return icons[ext] || '📄';
+}
+
+function attachTreeListeners() {
+    // Directory click - toggle expand/collapse
+    document.querySelectorAll('.tree-dir').forEach(el => {
+        el.addEventListener('click', (e) => {
+            const path = el.dataset.path;
+            const childrenEl = el.nextElementSibling;
+
+            if (expandedDirs.has(path)) {
+                expandedDirs.delete(path);
+                el.classList.remove('expanded');
+                el.querySelector('.tree-chevron').textContent = '▶';
+                if (childrenEl) childrenEl.classList.add('collapsed');
+            } else {
+                expandedDirs.add(path);
+                el.classList.add('expanded');
+                el.querySelector('.tree-chevron').textContent = '▼';
+                if (childrenEl) childrenEl.classList.remove('collapsed');
+            }
+        });
+    });
+
+    // File click - open in viewer
+    document.querySelectorAll('.tree-file').forEach(el => {
+        el.addEventListener('click', () => {
+            const path = el.dataset.path;
+            openFile(path);
+        });
+    });
+}
+
+async function openFile(path) {
+    const viewer = document.getElementById('file-viewer');
+    const pathEl = document.getElementById('file-viewer-path');
+    const contentEl = document.getElementById('file-viewer-content');
+
+    viewer.style.display = 'block';
+    pathEl.textContent = path;
+    contentEl.textContent = 'Loading...';
+
+    // Highlight selected file
+    document.querySelectorAll('.tree-file').forEach(el => el.classList.remove('selected'));
+    document.querySelector(`.tree-file[data-path="${path}"]`)?.classList.add('selected');
+
+    try {
+        const response = await fetch(`/project/${projectName}/file?path=${encodeURIComponent(path)}`);
+        const data = await response.json();
+
+        if (data.error) {
+            contentEl.textContent = `Error: ${data.error}`;
+        } else {
+            contentEl.textContent = data.content;
+            // Apply syntax highlighting class based on extension
+            contentEl.className = `file-viewer-content language-${data.extension || 'text'}`;
+        }
+    } catch (e) {
+        contentEl.textContent = `Error loading file: ${e.message}`;
+    }
+}
+
+document.getElementById('btn-close-viewer').addEventListener('click', () => {
+    document.getElementById('file-viewer').style.display = 'none';
+    document.querySelectorAll('.tree-file').forEach(el => el.classList.remove('selected'));
+});
+
+document.getElementById('btn-refresh-files').addEventListener('click', loadFileTree);
+
+// Initialize
 loadProject();
+loadFileTree();
 </script>
 {% endblock %}

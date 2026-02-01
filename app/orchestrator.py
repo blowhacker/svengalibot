@@ -10,7 +10,7 @@ from typing import Optional, Callable
 from dataclasses import dataclass
 from enum import Enum
 
-from app.state import ProjectManager, Project, StateManager, Task, TaskStatus, ChunkStatus, TaskPhase
+from app.state import ProjectManager, Project, StateManager, Task, TaskStatus, ChunkStatus, TaskPhase, FlowDefinition, FlowStep
 from app.manager import Manager
 from app.worker import Worker, WorkerResult
 
@@ -40,6 +40,11 @@ class EventType(Enum):
     TASK_CANCELLED = "task_cancelled"
     USAGE_UPDATE = "usage_update"
     ERROR = "error"
+    # Flow-related events
+    FLOW_ITERATION = "flow_iteration"
+    FLOW_STEP = "flow_step"
+    MANAGER_FEEDBACK = "manager_feedback"
+    HUMAN_REVIEW_NEEDED = "human_review_needed"
 
 
 @dataclass
@@ -320,7 +325,20 @@ class Orchestrator:
                 return
 
     def _execute_chunk(self, project: Project, task_id: str, chunk_id: str) -> bool:
-        """Execute a single chunk with retry logic."""
+        """Execute a single chunk using flow-driven execution."""
+        state = self.project_manager.get_state_manager(project)
+        task = state.get_task(task_id)
+
+        if not task:
+            return False
+
+        # Get flow definition (use default if not set)
+        flow = task.flow or FlowDefinition.default()
+
+        return self._execute_chunk_flow(project, task_id, chunk_id, flow)
+
+    def _execute_chunk_flow(self, project: Project, task_id: str, chunk_id: str, flow: FlowDefinition) -> bool:
+        """Execute chunk according to its flow definition."""
         state = self.project_manager.get_state_manager(project)
         task_key = self._task_key(project.name, task_id)
 
@@ -331,129 +349,344 @@ class Orchestrator:
 
         guide = self._load_guide(project)
         previous_feedback = None
-        attempt_history = []  # Track all attempts for deep analysis
+        attempt_history = []
+        last_worker_result = None
 
-        # Get or capture baseline commit for this chunk
-        # This persists across retries so we always diff against the original state
+        # Get or capture baseline commit
         if chunk.baseline_commit:
             baseline_commit = chunk.baseline_commit
             logger.info(f"Chunk {chunk_id} using stored baseline: {baseline_commit[:8]}")
         else:
             baseline_commit = self._get_baseline_commit(project.path)
             logger.info(f"Chunk {chunk_id} captured new baseline: {baseline_commit[:8] if baseline_commit else 'none'}")
-            # Store baseline in chunk for future retries
             if baseline_commit:
                 state.update_chunk(task_id, chunk_id, baseline_commit=baseline_commit)
 
-        for attempt_num in range(self.max_attempts):
+        # Track current chunk for retry/approve lookups
+        state.update_task(task_id, current_chunk=chunk_id)
+
+        chunk_spec = {
+            "title": chunk.title,
+            "description": chunk.description,
+            "acceptance_criteria": chunk.acceptance_criteria,
+        }
+
+        for iteration in range(flow.max_iterations):
             if self._should_stop(task_key):
                 return False
 
-            # After 3 failed attempts, get detailed remediation from manager
-            if attempt_num >= 3 and attempt_history:
+            # Save checkpoint for resume
+            state.update_chunk(task_id, chunk_id, current_iteration=iteration, current_step=0)
+
+            self._emit(Event(
+                type=EventType.FLOW_ITERATION,
+                task_id=task_id,
+                chunk_id=chunk_id,
+                data={
+                    "project": project.name,
+                    "iteration": iteration + 1,
+                    "max_iterations": flow.max_iterations,
+                },
+            ))
+
+            for step_idx, step in enumerate(flow.steps):
+                if self._should_stop(task_key):
+                    return False
+
+                # Save step checkpoint
+                state.update_chunk(task_id, chunk_id, current_step=step_idx)
+
                 self._emit(Event(
-                    type=EventType.MANAGER_THINKING,
+                    type=EventType.FLOW_STEP,
                     task_id=task_id,
                     chunk_id=chunk_id,
                     data={
                         "project": project.name,
-                        "message": f"Attempt {attempt_num + 1}: Getting detailed remediation plan from manager...",
+                        "step_type": step.type,
+                        "step_action": step.action,
+                        "step_index": step_idx + 1,
+                        "total_steps": len(flow.steps),
                     },
                 ))
-                previous_feedback, usage = self.manager.get_detailed_remediation(
-                    chunk_spec={
-                        "title": chunk.title,
-                        "description": chunk.description,
-                        "acceptance_criteria": chunk.acceptance_criteria,
-                    },
-                    attempt_history=attempt_history,
+
+                result = self._execute_step(
+                    project, task_id, chunk_id, step,
+                    chunk_spec=chunk_spec,
                     guide=guide,
+                    previous_feedback=previous_feedback,
+                    baseline_commit=baseline_commit,
+                    last_worker_result=last_worker_result,
+                    iteration=iteration,
+                    attempt_history=attempt_history,
                 )
-                state.update_usage(task_id, usage["prompt_tokens"], usage["completion_tokens"], usage["cost"])
-                self._emit_usage_update(task_id, project.name, state)
-                self._emit(Event(
-                    type=EventType.MANAGER_RESPONSE,
-                    task_id=task_id,
-                    chunk_id=chunk_id,
-                    data={
-                        "project": project.name,
-                        "message": "Detailed remediation plan ready",
-                        "remediation": previous_feedback[:500] if previous_feedback else "",
-                    },
-                ))
 
-            # Create attempt
-            attempt = state.create_attempt(task_id, chunk_id)
-            if not attempt:
-                return False
+                if result is None:
+                    # Step failed
+                    if step.optional:
+                        continue
+                    return False
 
-            # Track current chunk for retry/approve lookups
-            state.update_task(task_id, current_chunk=chunk_id)
+                if result == "paused":
+                    # Human step - pause for input
+                    return True  # Will be resumed later
 
+                if step.type == "worker":
+                    last_worker_result = result
+                    if not result.get("success"):
+                        previous_feedback = f"Worker failed: {result.get('error', 'Unknown error')}"
+                        break  # Exit step loop, try next iteration
+
+                elif step.type == "manager":
+                    if step.action == "review" and flow.stop_on_approval:
+                        if result.get("decision") == "approved":
+                            # Commit and return success
+                            self._commit_chunk(project.path, f"Complete {chunk_id}: {chunk.title}")
+                            return True
+                        else:
+                            # Track for retry
+                            previous_feedback = self.manager.summarize_feedback(result)
+                            attempt_history.append({
+                                "attempt": iteration + 1,
+                                "diff": last_worker_result.get("diff", "")[:5000] if last_worker_result else "",
+                                "summary": last_worker_result.get("summary", "") if last_worker_result else "",
+                                "review": result,
+                                "issues": result.get("issues", []),
+                            })
+                    elif step.action == "feedback":
+                        # Feedback mode - just collect suggestions for next iteration
+                        previous_feedback = result.get("next_iteration_focus", "")
+                        if result.get("suggestions"):
+                            suggestions_text = "\n".join(
+                                f"- [{s.get('priority', 'medium')}] {s.get('area', '')}: {s.get('suggested', '')}"
+                                for s in result.get("suggestions", [])
+                            )
+                            previous_feedback = f"{previous_feedback}\n\nSuggestions:\n{suggestions_text}"
+
+            # Check if all worker steps succeeded and we're not in approval mode
+            if not flow.stop_on_approval and last_worker_result and last_worker_result.get("success"):
+                # In iterative mode without approval, continue to next iteration
+                pass
+
+        # If we reach here in non-approval mode, commit the final result
+        if not flow.stop_on_approval and last_worker_result and last_worker_result.get("success"):
+            self._commit_chunk(project.path, f"Complete {chunk_id}: {chunk.title} (after {flow.max_iterations} iterations)")
+            state.update_chunk(task_id, chunk_id, status=ChunkStatus.APPROVED)
             self._emit(Event(
-                type=EventType.CHUNK_STARTED,
+                type=EventType.CHUNK_APPROVED,
                 task_id=task_id,
                 chunk_id=chunk_id,
-                data={"project": project.name, "attempt": attempt_num + 1},
+                data={"project": project.name, "iterations_completed": flow.max_iterations},
             ))
+            return True
 
-            # Build chunk spec
-            chunk_spec = {
-                "title": chunk.title,
-                "description": chunk.description,
-                "acceptance_criteria": chunk.acceptance_criteria,
-            }
+        # All iterations exhausted without approval
+        return False
 
-            # Execute worker in project workspace
-            self._emit(Event(
-                type=EventType.WORKER_STARTED,
-                task_id=task_id,
-                chunk_id=chunk_id,
-                data={"project": project.name, "message": f"Starting Claude CLI for: {chunk.title} (attempt {attempt_num + 1}/{self.max_attempts})", "workspace": str(project.path)},
-            ))
+    def _execute_step(
+        self,
+        project: Project,
+        task_id: str,
+        chunk_id: str,
+        step: FlowStep,
+        chunk_spec: dict,
+        guide: dict,
+        previous_feedback: str,
+        baseline_commit: str,
+        last_worker_result: dict,
+        iteration: int,
+        attempt_history: list,
+    ):
+        """Execute a single flow step.
 
-            worker = Worker(project.path)
+        Returns:
+            - dict with results for worker/manager steps
+            - "paused" string for human steps
+            - None if step failed
+        """
+        state = self.project_manager.get_state_manager(project)
 
-            output_buffer = []
-
-            def on_output(line: str):
-                output_buffer.append(line)
-                self._emit(Event(
-                    type=EventType.CHUNK_OUTPUT,
-                    task_id=task_id,
-                    chunk_id=chunk_id,
-                    data={"project": project.name, "content": line},
-                ))
-
-            result = worker.execute_local(
-                chunk_spec,
-                context="",
+        if step.type == "worker":
+            return self._run_worker_step(
+                project, task_id, chunk_id, step,
+                chunk_spec=chunk_spec,
                 guide=guide,
                 previous_feedback=previous_feedback,
-                on_output=on_output,
                 baseline_commit=baseline_commit,
+                iteration=iteration,
+                attempt_history=attempt_history,
             )
 
-            # Complete attempt
-            state.complete_attempt(
-                task_id, chunk_id, attempt.id,
-                worker_log="".join(output_buffer),
-                diff=result.diff,
-                success=result.success,
+        elif step.type == "manager":
+            return self._run_manager_step(
+                project, task_id, chunk_id, step,
+                chunk_spec=chunk_spec,
+                guide=guide,
+                last_worker_result=last_worker_result,
+                iteration=iteration,
             )
 
+        elif step.type == "human":
+            return self._await_human_step(project, task_id, chunk_id, step)
+
+        return None
+
+    def _run_worker_step(
+        self,
+        project: Project,
+        task_id: str,
+        chunk_id: str,
+        step: FlowStep,
+        chunk_spec: dict,
+        guide: dict,
+        previous_feedback: str,
+        baseline_commit: str,
+        iteration: int,
+        attempt_history: list,
+    ) -> dict:
+        """Run a worker step (execute, write, revise)."""
+        state = self.project_manager.get_state_manager(project)
+        chunk = state.get_chunk(task_id, chunk_id)
+
+        # Create attempt
+        attempt = state.create_attempt(task_id, chunk_id)
+        if not attempt:
+            return {"success": False, "error": "Failed to create attempt"}
+
+        # After 3 failed iterations, get detailed remediation
+        if iteration >= 3 and attempt_history:
             self._emit(Event(
-                type=EventType.CHUNK_COMPLETED,
+                type=EventType.MANAGER_THINKING,
                 task_id=task_id,
                 chunk_id=chunk_id,
-                data={"project": project.name, "success": result.success, "diff": result.diff},
+                data={
+                    "project": project.name,
+                    "message": f"Iteration {iteration + 1}: Getting detailed remediation plan...",
+                },
+            ))
+            previous_feedback, usage = self.manager.get_detailed_remediation(
+                chunk_spec=chunk_spec,
+                attempt_history=attempt_history,
+                guide=guide,
+            )
+            state.update_usage(task_id, usage["prompt_tokens"], usage["completion_tokens"], usage["cost"])
+            self._emit_usage_update(task_id, project.name, state)
+
+        self._emit(Event(
+            type=EventType.CHUNK_STARTED,
+            task_id=task_id,
+            chunk_id=chunk_id,
+            data={"project": project.name, "attempt": iteration + 1},
+        ))
+
+        action_desc = {
+            "execute": "executing",
+            "write": "writing",
+            "revise": "revising",
+        }.get(step.action, "executing")
+
+        self._emit(Event(
+            type=EventType.WORKER_STARTED,
+            task_id=task_id,
+            chunk_id=chunk_id,
+            data={
+                "project": project.name,
+                "message": f"Claude is {action_desc}: {chunk.title} (iteration {iteration + 1})",
+                "workspace": str(project.path),
+            },
+        ))
+
+        worker = Worker(project.path)
+        output_buffer = []
+
+        def on_output(line: str):
+            output_buffer.append(line)
+            self._emit(Event(
+                type=EventType.CHUNK_OUTPUT,
+                task_id=task_id,
+                chunk_id=chunk_id,
+                data={"project": project.name, "content": line},
             ))
 
-            if not result.success:
-                previous_feedback = f"Worker failed: {result.error}"
-                continue
+        result = worker.execute_local(
+            chunk_spec,
+            context="",
+            guide=guide,
+            previous_feedback=previous_feedback,
+            on_output=on_output,
+            baseline_commit=baseline_commit,
+        )
 
-            # Review
+        # Complete attempt
+        state.complete_attempt(
+            task_id, chunk_id, attempt.id,
+            worker_log="".join(output_buffer),
+            diff=result.diff,
+            success=result.success,
+        )
+
+        self._emit(Event(
+            type=EventType.CHUNK_COMPLETED,
+            task_id=task_id,
+            chunk_id=chunk_id,
+            data={"project": project.name, "success": result.success, "diff": result.diff},
+        ))
+
+        return {
+            "success": result.success,
+            "diff": result.diff,
+            "summary": result.summary,
+            "error": result.error,
+        }
+
+    def _run_manager_step(
+        self,
+        project: Project,
+        task_id: str,
+        chunk_id: str,
+        step: FlowStep,
+        chunk_spec: dict,
+        guide: dict,
+        last_worker_result: dict,
+        iteration: int,
+    ) -> dict:
+        """Run a manager step (review, feedback, approve)."""
+        state = self.project_manager.get_state_manager(project)
+        chunk = state.get_chunk(task_id, chunk_id)
+
+        if not last_worker_result:
+            return {"decision": "rejected", "reason": "No worker result to review"}
+
+        diff = last_worker_result.get("diff", "")
+        summary = last_worker_result.get("summary", "")
+
+        if step.action == "feedback":
+            # Feedback mode - constructive suggestions without approval gate
+            self._emit(Event(
+                type=EventType.MANAGER_THINKING,
+                task_id=task_id,
+                chunk_id=chunk_id,
+                data={"project": project.name, "message": "Manager providing feedback..."},
+            ))
+
+            feedback, usage = self.manager.give_feedback(chunk_spec, diff, summary, guide)
+            state.update_usage(task_id, usage["prompt_tokens"], usage["completion_tokens"], usage["cost"])
+            self._emit_usage_update(task_id, project.name, state)
+
+            self._emit(Event(
+                type=EventType.MANAGER_FEEDBACK,
+                task_id=task_id,
+                chunk_id=chunk_id,
+                data={
+                    "project": project.name,
+                    "iteration": iteration + 1,
+                    "feedback": feedback,
+                },
+            ))
+
+            return feedback
+
+        elif step.action in ("review", "approve"):
+            # Review mode with approval decision
             self._emit(Event(
                 type=EventType.CHUNK_REVIEWING,
                 task_id=task_id,
@@ -461,25 +694,23 @@ class Orchestrator:
                 data={"project": project.name},
             ))
 
-            review, usage = self.manager.review_chunk(
-                chunk_spec,
-                result.diff,
-                result.summary,
-                guide,
-            )
+            review, usage = self.manager.review_chunk(chunk_spec, diff, summary, guide)
             state.update_usage(task_id, usage["prompt_tokens"], usage["completion_tokens"], usage["cost"])
             self._emit_usage_update(task_id, project.name, state)
 
-            # Auto-approve if no critical issues (manager might be overly strict)
+            # Auto-approve if no critical issues
             issues = review.get("issues", [])
             critical_issues = [i for i in issues if i.get("severity") == "critical"]
             if review.get("decision") != "approved" and not critical_issues:
-                logger.info(f"Auto-approving: manager rejected but no critical issues found")
+                logger.info("Auto-approving: manager rejected but no critical issues found")
                 review["decision"] = "approved"
                 review["auto_approved"] = True
                 review["notes"] = "Approved with minor suggestions (no blocking issues)"
 
-            state.set_review(task_id, chunk_id, attempt.id, review)
+            # Get the current attempt to store review
+            chunk = state.get_chunk(task_id, chunk_id)
+            if chunk and chunk.current_attempt:
+                state.set_review(task_id, chunk_id, chunk.current_attempt, review)
 
             if review.get("decision") == "approved":
                 self._emit(Event(
@@ -492,87 +723,52 @@ class Orchestrator:
                         "notes": review.get("notes", ""),
                     },
                 ))
-
-                # Commit changes in project workspace
-                self._commit_chunk(project.path, f"Complete {chunk_id}: {chunk.title}")
-
-                return True
             else:
                 self._emit(Event(
                     type=EventType.CHUNK_REJECTED,
                     task_id=task_id,
                     chunk_id=chunk_id,
-                    data={"project": project.name, "review": review, "attempt": attempt_num + 1},
+                    data={"project": project.name, "review": review, "attempt": iteration + 1},
                 ))
 
-                # Give worker a chance to clarify before retry (soft rebuttal)
-                self._emit(Event(
-                    type=EventType.CHUNK_OUTPUT,
-                    task_id=task_id,
-                    chunk_id=chunk_id,
-                    data={"project": project.name, "content": "\n[🤔 Asking Claude if there's context the reviewer missed...]\n"},
-                ))
+            return review
 
-                worker_clarification = worker.get_clarification(chunk_spec, review)
+        return {"decision": "rejected", "reason": f"Unknown manager action: {step.action}"}
 
-                # If worker has something to say, let manager reconsider
-                if worker_clarification and "feedback is fair" not in worker_clarification.lower():
-                    self._emit(Event(
-                        type=EventType.CHUNK_OUTPUT,
-                        task_id=task_id,
-                        chunk_id=chunk_id,
-                        data={"project": project.name, "content": f"\n[Claude's response to feedback]\n{worker_clarification}\n"},
-                    ))
+    def _await_human_step(self, project: Project, task_id: str, chunk_id: str, step: FlowStep):
+        """Pause execution for human review/approval."""
+        state = self.project_manager.get_state_manager(project)
 
-                    self._emit(Event(
-                        type=EventType.MANAGER_THINKING,
-                        task_id=task_id,
-                        chunk_id=chunk_id,
-                        data={"project": project.name, "message": "Manager reconsidering with Claude's input..."},
-                    ))
+        self._emit(Event(
+            type=EventType.HUMAN_REVIEW_NEEDED,
+            task_id=task_id,
+            chunk_id=chunk_id,
+            data={
+                "project": project.name,
+                "action": step.action,
+                "message": f"Human {step.action} required for chunk {chunk_id}",
+            },
+        ))
 
-                    reconsideration, usage = self.manager.reconsider_with_rebuttal(review, worker_clarification)
-                    state.update_usage(task_id, usage["prompt_tokens"], usage["completion_tokens"], usage["cost"])
-                    self._emit_usage_update(task_id, project.name, state)
+        state.update_task(task_id, status=TaskStatus.AWAITING_APPROVAL)
+        self._emit(Event(
+            type=EventType.TASK_PAUSED,
+            task_id=task_id,
+            data={
+                "project": project.name,
+                "chunk_id": chunk_id,
+                "reason": "human_step",
+                "message": f"Waiting for human {step.action}",
+            },
+        ))
 
-                    if reconsideration.get("final_decision") == "approved":
-                        self._emit(Event(
-                            type=EventType.CHUNK_APPROVED,
-                            task_id=task_id,
-                            chunk_id=chunk_id,
-                            data={"project": project.name, "reconsidered": True, "reasoning": reconsideration.get("reasoning", "")},
-                        ))
-                        self._commit_chunk(project.path, f"Complete {chunk_id}: {chunk.title}")
-                        return True
+        return "paused"
 
-                    # Manager maintained position - use updated feedback
-                    self._emit(Event(
-                        type=EventType.MANAGER_RESPONSE,
-                        task_id=task_id,
-                        chunk_id=chunk_id,
-                        data={
-                            "project": project.name,
-                            "message": f"Manager maintains rejection: {reconsideration.get('reasoning', '')}",
-                            "remaining_blockers": reconsideration.get("remaining_blockers", []),
-                        },
-                    ))
-                    review = {**review, "feedback_for_retry": reconsideration.get("feedback_for_retry", review.get("feedback_for_retry", ""))}
-
-                # Track attempt for deep analysis
-                attempt_history.append({
-                    "attempt": attempt_num + 1,
-                    "diff": result.diff[:5000] if result.diff else "",
-                    "summary": result.summary,
-                    "review": review,
-                    "issues": review.get("issues", []),
-                })
-
-                # For early attempts, use simple feedback; later attempts use deep analysis
-                if attempt_num < 3:
-                    previous_feedback = self.manager.summarize_feedback(review)
-
-        # All attempts failed
-        return False
+    def _execute_chunk_legacy(self, project: Project, task_id: str, chunk_id: str) -> bool:
+        """Legacy execution method - kept for reference but no longer used."""
+        # This is the old hardcoded implementation
+        # Kept here in case we need to reference it
+        pass
 
     def _commit_chunk(self, workspace: Path, message: str):
         """Commit changes in the project workspace."""

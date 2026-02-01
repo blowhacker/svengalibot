@@ -305,6 +305,39 @@ class Manager:
 
         return self._extract_json(response), usage
 
+    def give_feedback(
+        self,
+        chunk_spec: dict,
+        diff: str,
+        worker_summary: str,
+        guide: dict,
+    ) -> tuple[dict, dict]:
+        """Give constructive feedback without approve/reject decision.
+
+        This is used in iterative flows where we want improvement suggestions
+        without gate-keeping. The focus is on helping refine the work.
+
+        Returns:
+            Tuple of (feedback_dict, usage_info)
+        """
+        prompt_template = self._load_prompt("feedback")
+
+        guide_text = self._format_guide(guide)
+        criteria_text = "\n".join(f"- {c}" for c in chunk_spec.get("acceptance_criteria", []))
+
+        prompt = prompt_template.format(
+            chunk_spec=json.dumps(chunk_spec, indent=2),
+            acceptance_criteria=criteria_text,
+            guide=guide_text,
+            diff=diff,
+            worker_summary=worker_summary,
+        )
+
+        messages = [{"role": "user", "content": prompt}]
+        response, usage = self._call_api(messages)
+
+        return self._extract_json(response), usage
+
     def summarize_feedback(self, review: dict) -> str:
         """Create a concise summary of review feedback for retry attempts."""
         if review.get("decision") == "approved":

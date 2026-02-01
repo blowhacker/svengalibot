@@ -64,15 +64,70 @@
     <!-- Plan Editor Modal -->
     <div id="plan-editor-modal" class="modal" style="display:none">
         <div class="modal-content plan-editor-content">
-            <h3>Edit Execution Plan</h3>
-            <p class="modal-hint">Drag chunks to reorder. Click to edit. Toggle skip to exclude chunks.</p>
-            <div id="plan-editor-chunks" class="plan-editor-chunks"></div>
-            <div class="plan-editor-actions">
-                <button id="btn-add-chunk" class="btn-secondary">+ Add Chunk</button>
-                <div class="modal-actions">
-                    <button id="btn-cancel-edit" class="btn-secondary">Cancel</button>
-                    <button id="btn-save-plan" class="btn-primary">Save Changes</button>
+            <div class="plan-editor-tabs">
+                <button class="tab-btn active" data-tab="chunks">Chunks</button>
+                <button class="tab-btn" data-tab="flow">Workflow</button>
+            </div>
+
+            <!-- Chunks Tab -->
+            <div id="chunks-tab" class="tab-content active">
+                <h3>Edit Execution Plan</h3>
+                <p class="modal-hint">Drag chunks to reorder. Click to edit. Toggle skip to exclude chunks.</p>
+                <div id="plan-editor-chunks" class="plan-editor-chunks"></div>
+                <div class="plan-editor-actions">
+                    <button id="btn-add-chunk" class="btn-secondary">+ Add Chunk</button>
                 </div>
+            </div>
+
+            <!-- Flow Tab -->
+            <div id="flow-tab" class="tab-content" style="display:none">
+                <h3>Workflow Settings</h3>
+                <p class="modal-hint">Define how chunks are executed: who does what, how many iterations.</p>
+
+                <!-- Preset Selector -->
+                <div class="flow-section">
+                    <label>Preset:</label>
+                    <select id="flow-preset-select" class="flow-select">
+                        <option value="">Custom</option>
+                        <option value="default">Default (Worker → Review → Approve)</option>
+                        <option value="iterative">Iterative (Worker + Feedback loop)</option>
+                        <option value="human-in-loop">Human-in-Loop (Worker → Review → Human)</option>
+                        <option value="write-refine">Write & Refine (Text iteration)</option>
+                    </select>
+                </div>
+
+                <!-- Flow Settings -->
+                <div class="flow-section">
+                    <div class="flow-row">
+                        <label>Max Iterations:</label>
+                        <input type="number" id="flow-max-iterations" min="1" max="20" value="4" class="flow-input-small">
+                    </div>
+                    <div class="flow-row">
+                        <label>
+                            <input type="checkbox" id="flow-stop-on-approval" checked>
+                            Stop on approval (exit early if approved)
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Steps Editor -->
+                <div class="flow-section">
+                    <label>Steps (per iteration):</label>
+                    <div id="flow-steps-list" class="flow-steps-list"></div>
+                    <button id="btn-add-flow-step" class="btn-secondary btn-small">+ Add Step</button>
+                </div>
+
+                <!-- Step Types Legend -->
+                <div class="flow-legend">
+                    <div class="legend-item"><span class="legend-dot worker"></span> Worker: Claude CLI does work</div>
+                    <div class="legend-item"><span class="legend-dot manager"></span> Manager: ChatGPT evaluates</div>
+                    <div class="legend-item"><span class="legend-dot human"></span> Human: Pause for your input</div>
+                </div>
+            </div>
+
+            <div class="modal-actions">
+                <button id="btn-cancel-edit" class="btn-secondary">Cancel</button>
+                <button id="btn-save-plan" class="btn-primary">Save Changes</button>
             </div>
         </div>
     </div>
@@ -100,6 +155,7 @@ let currentTask = null;
 let workerStartTime = null;
 let workerTimer = null;
 let editedPlan = null;  // Holds plan being edited in modal
+let editedFlow = null;  // Holds flow being edited in modal
 let draggedChunk = null;  // For drag-and-drop
 
 function formatElapsed(seconds) {
@@ -119,7 +175,14 @@ function updatePipeline(task) {
         return;
     }
 
-    pipeline.innerHTML = task.chunks.map((chunk, i) => {
+    // Show flow info if custom flow is set
+    let flowBadge = '';
+    if (task.flow) {
+        const stepTypes = task.flow.steps.map(s => s.type[0].toUpperCase()).join('→');
+        flowBadge = `<span class="flow-badge" title="Flow: ${task.flow.max_iterations} iterations, ${stepTypes}">${stepTypes} ×${task.flow.max_iterations}</span>`;
+    }
+
+    pipeline.innerHTML = flowBadge + task.chunks.map((chunk, i) => {
         let statusClass = chunk.status;
         if (chunk.skipped) statusClass = 'skipped';
         return `
@@ -457,6 +520,45 @@ function handleSSEEvent(data) {
             terminal.textContent += `\n[ERROR: ${data.data?.error || 'Unknown error'}]\n`;
             break;
 
+        case 'flow_iteration':
+            terminal.textContent += `\n[📍 Iteration ${data.data?.iteration}/${data.data?.max_iterations}]\n`;
+            terminal.scrollTop = terminal.scrollHeight;
+            break;
+
+        case 'flow_step':
+            const stepType = data.data?.step_type || 'step';
+            const stepAction = data.data?.step_action || 'action';
+            terminal.textContent += `[→ ${stepType}: ${stepAction} (step ${data.data?.step_index}/${data.data?.total_steps})]\n`;
+            terminal.scrollTop = terminal.scrollHeight;
+            break;
+
+        case 'manager_feedback':
+            terminal.textContent += '\n[💬 Manager Feedback]\n';
+            const feedback = data.data?.feedback;
+            if (feedback) {
+                terminal.textContent += `Assessment: ${feedback.overall_assessment || ''}\n`;
+                if (feedback.suggestions?.length) {
+                    terminal.textContent += 'Suggestions:\n';
+                    feedback.suggestions.forEach(s => {
+                        terminal.textContent += `  [${s.priority || 'medium'}] ${s.area || ''}: ${s.suggested || ''}\n`;
+                    });
+                }
+                if (feedback.next_iteration_focus) {
+                    terminal.textContent += `\nNext focus: ${feedback.next_iteration_focus}\n`;
+                }
+            }
+            terminal.scrollTop = terminal.scrollHeight;
+            break;
+
+        case 'human_review_needed':
+            terminal.textContent += '\n' + '═'.repeat(50) + '\n';
+            terminal.textContent += `👤 HUMAN ${(data.data?.action || 'REVIEW').toUpperCase()} NEEDED\n`;
+            terminal.textContent += '═'.repeat(50) + '\n';
+            terminal.textContent += `${data.data?.message || 'Your input is required'}\n`;
+            terminal.textContent += '═'.repeat(50) + '\n';
+            terminal.scrollTop = terminal.scrollHeight;
+            break;
+
         default:
             console.log('Unknown event:', data);
     }
@@ -537,19 +639,70 @@ document.getElementById('btn-cancel-edit').addEventListener('click', closePlanEd
 document.getElementById('btn-save-plan').addEventListener('click', savePlan);
 document.getElementById('btn-add-chunk').addEventListener('click', addChunk);
 
+// Tab switching
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const tabName = btn.dataset.tab;
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => {
+            c.classList.remove('active');
+            c.style.display = 'none';
+        });
+        btn.classList.add('active');
+        const tabEl = document.getElementById(`${tabName}-tab`);
+        tabEl.classList.add('active');
+        tabEl.style.display = 'block';
+    });
+});
+
+// Flow Editor Functions
+document.getElementById('btn-add-flow-step').addEventListener('click', addFlowStep);
+document.getElementById('flow-preset-select').addEventListener('change', applyFlowPreset);
+document.getElementById('flow-max-iterations').addEventListener('change', updateFlowFromInputs);
+document.getElementById('flow-stop-on-approval').addEventListener('change', updateFlowFromInputs);
+
 function openPlanEditor() {
     if (!currentTask || !currentTask.plan) {
         alert('No plan to edit yet');
         return;
     }
     editedPlan = JSON.parse(JSON.stringify(currentTask.plan)); // Deep copy
+
+    // Initialize flow from task or use default
+    if (currentTask.flow) {
+        editedFlow = JSON.parse(JSON.stringify(currentTask.flow));
+    } else {
+        // Default flow
+        editedFlow = {
+            max_iterations: 6,
+            stop_on_approval: true,
+            steps: [
+                { type: 'worker', action: 'execute', optional: false },
+                { type: 'manager', action: 'review', optional: false },
+            ]
+        };
+    }
+
     renderPlanEditor();
+    renderFlowEditor();
+
+    // Reset to first tab
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => {
+        c.classList.remove('active');
+        c.style.display = 'none';
+    });
+    document.querySelector('.tab-btn[data-tab="chunks"]').classList.add('active');
+    document.getElementById('chunks-tab').classList.add('active');
+    document.getElementById('chunks-tab').style.display = 'block';
+
     document.getElementById('plan-editor-modal').style.display = 'flex';
 }
 
 function closePlanEditor() {
     document.getElementById('plan-editor-modal').style.display = 'none';
     editedPlan = null;
+    editedFlow = null;
 }
 
 function renderPlanEditor() {
@@ -709,21 +862,145 @@ async function savePlan() {
     if (!editedPlan) return;
 
     try {
-        const response = await fetch(`${baseUrl}/plan`, {
+        // Save plan
+        const planResponse = await fetch(`${baseUrl}/plan`, {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(editedPlan),
         });
 
-        if (response.ok) {
-            closePlanEditor();
-            loadTask();
-        } else {
-            const err = await response.json();
-            alert('Failed to save: ' + (err.error || 'Unknown error'));
+        if (!planResponse.ok) {
+            const err = await planResponse.json();
+            alert('Failed to save plan: ' + (err.error || 'Unknown error'));
+            return;
+        }
+
+        // Save flow if edited
+        if (editedFlow) {
+            const flowResponse = await fetch(`${baseUrl}/flow`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(editedFlow),
+            });
+
+            if (!flowResponse.ok) {
+                const err = await flowResponse.json();
+                alert('Failed to save flow: ' + (err.error || 'Unknown error'));
+                return;
+            }
+        }
+
+        closePlanEditor();
+        loadTask();
+    } catch (e) {
+        alert('Failed to save: ' + e.message);
+    }
+}
+
+// Flow Editor Functions
+function renderFlowEditor() {
+    const container = document.getElementById('flow-steps-list');
+    if (!editedFlow?.steps) {
+        container.innerHTML = '<p class="empty-state">No steps defined</p>';
+        return;
+    }
+
+    // Update form inputs
+    document.getElementById('flow-max-iterations').value = editedFlow.max_iterations || 4;
+    document.getElementById('flow-stop-on-approval').checked = editedFlow.stop_on_approval !== false;
+
+    container.innerHTML = editedFlow.steps.map((step, i) => `
+        <div class="flow-step-editor" data-index="${i}">
+            <span class="flow-step-drag">⋮⋮</span>
+            <select class="flow-step-type" onchange="updateFlowStep(${i}, 'type', this.value)">
+                <option value="worker" ${step.type === 'worker' ? 'selected' : ''}>Worker</option>
+                <option value="manager" ${step.type === 'manager' ? 'selected' : ''}>Manager</option>
+                <option value="human" ${step.type === 'human' ? 'selected' : ''}>Human</option>
+            </select>
+            <select class="flow-step-action" onchange="updateFlowStep(${i}, 'action', this.value)">
+                ${getActionsForType(step.type).map(a =>
+                    `<option value="${a}" ${step.action === a ? 'selected' : ''}>${a}</option>`
+                ).join('')}
+            </select>
+            <label class="flow-step-optional">
+                <input type="checkbox" ${step.optional ? 'checked' : ''} onchange="updateFlowStep(${i}, 'optional', this.checked)">
+                Optional
+            </label>
+            <button class="btn-small btn-danger" onclick="removeFlowStep(${i})">×</button>
+        </div>
+    `).join('');
+}
+
+function getActionsForType(type) {
+    const actions = {
+        worker: ['execute', 'write', 'revise'],
+        manager: ['review', 'feedback', 'approve'],
+        human: ['review', 'approve'],
+    };
+    return actions[type] || ['execute'];
+}
+
+function updateFlowStep(index, field, value) {
+    if (!editedFlow?.steps?.[index]) return;
+
+    editedFlow.steps[index][field] = value;
+
+    // If type changed, reset action to first valid action for that type
+    if (field === 'type') {
+        const validActions = getActionsForType(value);
+        editedFlow.steps[index].action = validActions[0];
+    }
+
+    renderFlowEditor();
+}
+
+function addFlowStep() {
+    if (!editedFlow) {
+        editedFlow = { max_iterations: 4, stop_on_approval: true, steps: [] };
+    }
+    if (!editedFlow.steps) editedFlow.steps = [];
+
+    editedFlow.steps.push({
+        type: 'worker',
+        action: 'execute',
+        optional: false,
+    });
+    renderFlowEditor();
+}
+
+function removeFlowStep(index) {
+    if (editedFlow?.steps && confirm('Remove this step?')) {
+        editedFlow.steps.splice(index, 1);
+        renderFlowEditor();
+    }
+}
+
+function updateFlowFromInputs() {
+    if (!editedFlow) {
+        editedFlow = { max_iterations: 4, stop_on_approval: true, steps: [] };
+    }
+    editedFlow.max_iterations = parseInt(document.getElementById('flow-max-iterations').value) || 4;
+    editedFlow.stop_on_approval = document.getElementById('flow-stop-on-approval').checked;
+}
+
+async function applyFlowPreset() {
+    const presetName = document.getElementById('flow-preset-select').value;
+    if (!presetName) {
+        // Custom - don't change anything
+        return;
+    }
+
+    try {
+        const response = await fetch('/flow/presets');
+        const data = await response.json();
+        const preset = data.presets.find(p => p.name === presetName);
+
+        if (preset) {
+            editedFlow = JSON.parse(JSON.stringify(preset.flow));
+            renderFlowEditor();
         }
     } catch (e) {
-        alert('Failed to save plan: ' + e.message);
+        console.error('Failed to load preset:', e);
     }
 }
 

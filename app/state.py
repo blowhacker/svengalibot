@@ -78,6 +78,126 @@ class ChunkStatus(Enum):
 
 
 @dataclass
+class FlowStep:
+    """A single step in a flow definition."""
+    type: str           # "worker", "manager", "human"
+    action: str         # "execute", "feedback", "review", "approve", etc.
+    optional: bool = False
+    config: dict = field(default_factory=dict)
+
+    def to_dict(self):
+        return {
+            "type": self.type,
+            "action": self.action,
+            "optional": self.optional,
+            "config": self.config,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "FlowStep":
+        return cls(
+            type=data.get("type", "worker"),
+            action=data.get("action", "execute"),
+            optional=data.get("optional", False),
+            config=data.get("config", {}),
+        )
+
+
+@dataclass
+class FlowDefinition:
+    """Defines the execution flow for a task."""
+    max_iterations: int = 4
+    stop_on_approval: bool = True
+    steps: list[FlowStep] = field(default_factory=list)
+
+    def to_dict(self):
+        return {
+            "max_iterations": self.max_iterations,
+            "stop_on_approval": self.stop_on_approval,
+            "steps": [s.to_dict() for s in self.steps],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "FlowDefinition":
+        return cls(
+            max_iterations=data.get("max_iterations", 4),
+            stop_on_approval=data.get("stop_on_approval", True),
+            steps=[FlowStep.from_dict(s) for s in data.get("steps", [])],
+        )
+
+    @classmethod
+    def default(cls) -> "FlowDefinition":
+        """Current hardcoded behavior as a flow."""
+        return cls(
+            max_iterations=6,
+            stop_on_approval=True,
+            steps=[
+                FlowStep("worker", "execute"),
+                FlowStep("manager", "review"),
+            ]
+        )
+
+    @classmethod
+    def iterative(cls, iterations: int = 4) -> "FlowDefinition":
+        """Iterative refinement: worker + manager feedback loop."""
+        return cls(
+            max_iterations=iterations,
+            stop_on_approval=True,
+            steps=[
+                FlowStep("worker", "execute"),
+                FlowStep("manager", "feedback"),
+            ]
+        )
+
+    @classmethod
+    def human_in_loop(cls) -> "FlowDefinition":
+        """Worker -> Manager -> Human approval gate."""
+        return cls(
+            max_iterations=6,
+            stop_on_approval=True,
+            steps=[
+                FlowStep("worker", "execute"),
+                FlowStep("manager", "review"),
+                FlowStep("human", "approve"),
+            ]
+        )
+
+    @classmethod
+    def write_refine(cls, iterations: int = 4) -> "FlowDefinition":
+        """Focused on text/doc generation with iteration."""
+        return cls(
+            max_iterations=iterations,
+            stop_on_approval=False,  # Always run all iterations
+            steps=[
+                FlowStep("worker", "write"),
+                FlowStep("manager", "feedback"),
+            ]
+        )
+
+    @classmethod
+    def get_preset(cls, name: str) -> "FlowDefinition":
+        """Get a flow preset by name."""
+        presets = {
+            "default": cls.default,
+            "iterative": cls.iterative,
+            "human-in-loop": cls.human_in_loop,
+            "write-refine": cls.write_refine,
+        }
+        factory = presets.get(name, cls.default)
+        return factory()
+
+    @classmethod
+    def list_presets(cls) -> list[dict]:
+        """List available presets with descriptions."""
+        return [
+            {"name": "default", "description": "Worker → Manager review → approve/reject"},
+            {"name": "iterative", "description": "N iterations of worker + manager feedback"},
+            {"name": "human-in-loop", "description": "Worker → Manager → Human approval gate"},
+            {"name": "write-refine", "description": "Text/doc generation with iteration"},
+        ]
+
+
+@dataclass
 class Attempt:
     id: str
     started_at: str
@@ -101,6 +221,8 @@ class Chunk:
     files_affected: list[str] = field(default_factory=list)
     baseline_commit: Optional[str] = None  # Git commit hash before first attempt
     skipped: bool = False  # If True, mark as APPROVED without executing
+    current_iteration: int = 0  # Current iteration in flow execution
+    current_step: int = 0  # Current step index in flow
 
     def to_dict(self):
         d = asdict(self)
@@ -121,6 +243,9 @@ class Chunk:
         ]
         # Backwards compatibility: default skipped to False
         data.setdefault("skipped", False)
+        # Backwards compatibility: default flow tracking fields
+        data.setdefault("current_iteration", 0)
+        data.setdefault("current_step", 0)
         return cls(**data)
 
 
@@ -141,6 +266,8 @@ class Task:
     checkpoint: Optional[dict] = None  # Recovery info (e.g., last completed step)
     usage: TokenUsage = field(default_factory=TokenUsage)
     cached_responses: dict = field(default_factory=dict)  # Cache for manager API responses
+    # Flow definition for customizable execution
+    flow: Optional[FlowDefinition] = None
 
     def to_dict(self):
         return {
@@ -158,6 +285,7 @@ class Task:
             "checkpoint": self.checkpoint,
             "usage": self.usage.to_dict(),
             "cached_responses": self.cached_responses,
+            "flow": self.flow.to_dict() if self.flow else None,
         }
 
     @classmethod
@@ -192,6 +320,11 @@ class Task:
         # Backwards compatibility: default cached_responses to empty
         data.setdefault("cached_responses", {})
         data.setdefault("checkpoint", None)
+        # Backwards compatibility: default flow to None (will use default at runtime)
+        if "flow" in data and data["flow"]:
+            data["flow"] = FlowDefinition.from_dict(data["flow"])
+        else:
+            data["flow"] = None
         return cls(**data)
 
     @property

@@ -401,6 +401,224 @@ def update_plan(project_name, task_id):
     return jsonify({"status": "updated"})
 
 
+@main_bp.route("/project/<project_name>/task/<task_id>/flow", methods=["PUT"])
+def update_flow(project_name, task_id):
+    """Update flow definition for a task."""
+    from app.state import FlowDefinition, FlowStep
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Flow data required"}), 400
+
+    state = get_state_manager_for_project(project_name)
+    if not state:
+        return jsonify({"error": "Project not found"}), 404
+
+    task = state.get_task(task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+
+    # Validate flow structure
+    errors = []
+
+    # Validate max_iterations
+    max_iterations = data.get("max_iterations", 4)
+    if not isinstance(max_iterations, int) or max_iterations < 1 or max_iterations > 20:
+        errors.append("max_iterations must be an integer between 1 and 20")
+
+    # Validate steps
+    steps = data.get("steps", [])
+    if not steps:
+        errors.append("At least one step is required")
+
+    valid_types = {"worker", "manager", "human"}
+    valid_actions = {
+        "worker": {"execute", "write", "revise"},
+        "manager": {"review", "feedback", "approve"},
+        "human": {"review", "approve"},
+    }
+
+    for i, step in enumerate(steps):
+        step_type = step.get("type")
+        step_action = step.get("action")
+
+        if step_type not in valid_types:
+            errors.append(f"Step {i+1}: Invalid type '{step_type}'. Must be one of: {valid_types}")
+        elif step_action not in valid_actions.get(step_type, set()):
+            errors.append(f"Step {i+1}: Invalid action '{step_action}' for type '{step_type}'. Must be one of: {valid_actions[step_type]}")
+
+    if errors:
+        return jsonify({"error": "Validation failed", "details": errors}), 400
+
+    # Build FlowDefinition
+    flow = FlowDefinition(
+        max_iterations=max_iterations,
+        stop_on_approval=data.get("stop_on_approval", True),
+        steps=[
+            FlowStep(
+                type=s.get("type"),
+                action=s.get("action"),
+                optional=s.get("optional", False),
+                config=s.get("config", {}),
+            )
+            for s in steps
+        ],
+    )
+
+    # Update task with new flow
+    task.flow = flow
+    state.update_task(task_id, flow=flow)
+
+    return jsonify({"status": "updated", "flow": flow.to_dict()})
+
+
+@main_bp.route("/flow/presets")
+def get_flow_presets():
+    """Get available flow presets."""
+    from app.state import FlowDefinition
+
+    presets = FlowDefinition.list_presets()
+
+    # Add full flow definition for each preset
+    result = []
+    for preset in presets:
+        flow = FlowDefinition.get_preset(preset["name"])
+        result.append({
+            **preset,
+            "flow": flow.to_dict(),
+        })
+
+    return jsonify({"presets": result})
+
+
+@main_bp.route("/project/<project_name>/files")
+def list_project_files(project_name):
+    """List files in a project directory as a tree structure."""
+    import os
+
+    pm = get_project_manager()
+    project = pm.get_project(project_name)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+
+    # Get optional path parameter for subdirectory
+    subpath = request.args.get("path", "")
+
+    # Build full path and validate it's within project
+    if subpath:
+        full_path = project.path / subpath
+        # Security: ensure path is within project directory
+        try:
+            full_path.resolve().relative_to(project.path.resolve())
+        except ValueError:
+            return jsonify({"error": "Invalid path"}), 400
+    else:
+        full_path = project.path
+
+    if not full_path.exists():
+        return jsonify({"error": "Path not found"}), 404
+
+    # Directories/files to ignore
+    ignore_patterns = {
+        ".git", ".svengali", "__pycache__", "node_modules",
+        ".venv", "venv", ".env", ".idea", ".vscode",
+        "*.pyc", "*.pyo", ".DS_Store", "*.egg-info",
+    }
+
+    def should_ignore(name):
+        if name in ignore_patterns:
+            return True
+        for pattern in ignore_patterns:
+            if pattern.startswith("*") and name.endswith(pattern[1:]):
+                return True
+        return False
+
+    def get_file_info(path, base_path):
+        """Get file/directory info."""
+        rel_path = path.relative_to(base_path)
+        stat = path.stat()
+        return {
+            "name": path.name,
+            "path": str(rel_path),
+            "type": "directory" if path.is_dir() else "file",
+            "size": stat.st_size if path.is_file() else None,
+            "extension": path.suffix[1:] if path.suffix else None,
+        }
+
+    def scan_directory(dir_path, base_path, depth=0, max_depth=10):
+        """Recursively scan directory."""
+        if depth > max_depth:
+            return []
+
+        items = []
+        try:
+            entries = sorted(dir_path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+            for entry in entries:
+                if should_ignore(entry.name):
+                    continue
+
+                info = get_file_info(entry, base_path)
+
+                if entry.is_dir():
+                    info["children"] = scan_directory(entry, base_path, depth + 1, max_depth)
+                    info["expanded"] = depth < 1  # Auto-expand first level
+
+                items.append(info)
+        except PermissionError:
+            pass
+
+        return items
+
+    tree = scan_directory(full_path, project.path)
+
+    return jsonify({
+        "project": project_name,
+        "root": str(project.path),
+        "tree": tree,
+    })
+
+
+@main_bp.route("/project/<project_name>/file")
+def get_project_file(project_name):
+    """Get contents of a file in a project."""
+    pm = get_project_manager()
+    project = pm.get_project(project_name)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+
+    file_path = request.args.get("path", "")
+    if not file_path:
+        return jsonify({"error": "Path required"}), 400
+
+    full_path = project.path / file_path
+
+    # Security: ensure path doesn't escape project directory via ..
+    if ".." in file_path.split("/"):
+        return jsonify({"error": "Invalid path"}), 400
+
+    if not full_path.exists():
+        return jsonify({"error": "File not found"}), 404
+
+    if not full_path.is_file():
+        return jsonify({"error": "Not a file"}), 400
+
+    # Check file size (limit to 1MB)
+    if full_path.stat().st_size > 1024 * 1024:
+        return jsonify({"error": "File too large", "size": full_path.stat().st_size}), 400
+
+    # Try to read as text
+    try:
+        content = full_path.read_text(encoding="utf-8")
+        return jsonify({
+            "path": file_path,
+            "content": content,
+            "size": len(content),
+            "extension": full_path.suffix[1:] if full_path.suffix else None,
+        })
+    except UnicodeDecodeError:
+        return jsonify({"error": "Binary file", "path": file_path}), 400
+
+
 @main_bp.route("/project/<project_name>/task/<task_id>", methods=["DELETE"])
 def delete_task(project_name, task_id):
     """Delete a task."""
