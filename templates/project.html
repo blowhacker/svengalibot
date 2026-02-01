@@ -32,74 +32,44 @@
             <pre id="file-viewer-content" class="file-viewer-content"></pre>
         </section>
 
-        <section class="project-flow">
-            <div class="section-header">
-                <h2>Default Workflow</h2>
-                <button id="btn-edit-flow" class="btn-secondary btn-small">Edit</button>
-            </div>
-            <div id="flow-display" class="flow-display">
-                <span class="flow-badge-large">Default (Worker → Review)</span>
-            </div>
-        </section>
+        <!-- New Collaboration Task -->
+        <section class="new-task collab-section">
+            <h2>Start Collaboration</h2>
+            <p class="section-hint">Describe how Claude and OpenAI should work together on your project.</p>
 
-        <section class="new-task">
-            <h2>New Task</h2>
-            <form id="new-task-form">
-                <textarea id="task-description" placeholder="Describe what you want to build or change..." rows="4"></textarea>
-                <button type="submit">Create Task</button>
+            <!-- Example Prompts -->
+            <div class="example-prompts">
+                <div class="examples-label">Quick start:</div>
+                <div id="example-buttons" class="example-buttons">
+                    <!-- Filled by JS -->
+                </div>
+            </div>
+
+            <form id="new-collab-form">
+                <textarea id="collab-prompt" placeholder="Example: Claude writes code to implement the feature. OpenAI reviews for bugs and suggests improvements. Continue until OpenAI approves the implementation." rows="4"></textarea>
+                <div class="collab-options">
+                    <label>
+                        Max iterations:
+                        <input type="number" id="max-iterations" value="10" min="1" max="50" class="input-small">
+                    </label>
+                </div>
+                <button type="submit" class="btn-primary">Start Collaboration</button>
             </form>
         </section>
 
+        <!-- Task History -->
         <section class="task-list">
-            <h2>Tasks</h2>
+            <h2>Collaborations</h2>
             <div id="tasks-container">
-                <p class="empty-state">No tasks yet. Create one above.</p>
+                <p class="empty-state">No collaborations yet. Start one above.</p>
             </div>
         </section>
-    </div>
-</div>
 
-<!-- Flow Editor Modal -->
-<div id="flow-editor-modal" class="modal" style="display:none">
-    <div class="modal-content">
-        <h3>Default Workflow</h3>
-        <p class="modal-hint">Set the default workflow for all new tasks in this project.</p>
-
-        <div class="flow-section">
-            <label>Preset:</label>
-            <select id="flow-preset-select" class="flow-select">
-                <option value="">Custom</option>
-                <option value="default">Default (Worker → Review → Approve)</option>
-                <option value="iterative">Iterative (Worker + Feedback loop)</option>
-                <option value="human-in-loop">Human-in-Loop (Worker → Review → Human)</option>
-                <option value="write-refine">Write & Refine (Text iteration)</option>
-            </select>
-        </div>
-
-        <div class="flow-section">
-            <div class="flow-row">
-                <label>Max Iterations:</label>
-                <input type="number" id="flow-max-iterations" min="1" max="20" value="4" class="flow-input-small">
-            </div>
-            <div class="flow-row">
-                <label>
-                    <input type="checkbox" id="flow-stop-on-approval" checked>
-                    Stop on approval
-                </label>
-            </div>
-        </div>
-
-        <div class="flow-section">
-            <label>Steps (per iteration):</label>
-            <div id="flow-steps-list" class="flow-steps-list"></div>
-            <button id="btn-add-flow-step" class="btn-secondary btn-small">+ Add Step</button>
-        </div>
-
-        <div class="modal-actions">
-            <button id="btn-clear-flow" class="btn-secondary">Clear (Use Default)</button>
-            <button id="btn-cancel-flow" class="btn-secondary">Cancel</button>
-            <button id="btn-save-flow" class="btn-primary">Save</button>
-        </div>
+        <!-- Legacy Tasks (if any) -->
+        <section class="task-list" id="legacy-tasks-section" style="display:none">
+            <h2>Legacy Tasks</h2>
+            <div id="legacy-tasks-container"></div>
+        </section>
     </div>
 </div>
 {% endblock %}
@@ -108,24 +78,64 @@
 <script>
 const projectName = '{{ project_name }}';
 let expandedDirs = new Set();
+let examplePrompts = [];
 
-document.getElementById('new-task-form').addEventListener('submit', async (e) => {
+// Load example prompts
+async function loadExamples() {
+    try {
+        const response = await fetch('/prompts/examples');
+        const data = await response.json();
+        examplePrompts = data.prompts || [];
+        renderExampleButtons();
+    } catch (e) {
+        console.error('Failed to load examples:', e);
+    }
+}
+
+function renderExampleButtons() {
+    const container = document.getElementById('example-buttons');
+    container.innerHTML = examplePrompts.map(ex => `
+        <button type="button" class="example-btn" data-id="${ex.id}" title="${escapeHtml(ex.description)}">
+            ${escapeHtml(ex.name)}
+        </button>
+    `).join('');
+
+    container.querySelectorAll('.example-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const example = examplePrompts.find(e => e.id === btn.dataset.id);
+            if (example) {
+                document.getElementById('collab-prompt').value = example.prompt;
+            }
+        });
+    });
+}
+
+// New collaboration form
+document.getElementById('new-collab-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const description = document.getElementById('task-description').value;
-    if (!description.trim()) return;
+    const prompt = document.getElementById('collab-prompt').value.trim();
+    const maxIterations = parseInt(document.getElementById('max-iterations').value) || 10;
 
-    const response = await fetch(`/project/${projectName}/task`, {
+    if (!prompt) {
+        alert('Please enter a collaboration prompt');
+        return;
+    }
+
+    const response = await fetch(`/project/${projectName}/chat`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({description})
+        body: JSON.stringify({
+            prompt,
+            max_iterations: maxIterations,
+        })
     });
 
     if (response.ok) {
         const data = await response.json();
-        window.location.href = `/project/${projectName}/task/${data.id}`;
+        window.location.href = `/project/${projectName}/chat/${data.id}`;
     } else {
         const error = await response.json();
-        alert(error.error || 'Failed to create task');
+        alert(error.error || 'Failed to start collaboration');
     }
 });
 
@@ -138,25 +148,47 @@ async function loadProject() {
     }
 
     const data = await response.json();
-    currentProject = data;
-
     document.getElementById('project-path').textContent = data.path;
-    updateFlowDisplay(data.default_flow);
 
-    const container = document.getElementById('tasks-container');
+    // Load collaboration tasks
+    await loadCollabTasks();
 
-    if (!data.tasks || data.tasks.length === 0) {
-        container.innerHTML = '<p class="empty-state">No tasks yet. Create one above.</p>';
-        return;
+    // Load legacy tasks if any
+    if (data.tasks && data.tasks.length > 0) {
+        document.getElementById('legacy-tasks-section').style.display = 'block';
+        const container = document.getElementById('legacy-tasks-container');
+        container.innerHTML = data.tasks.map(task => `
+            <a href="/project/${projectName}/task/${task.id}" class="task-card">
+                <span class="status status-${task.status}">${task.status}</span>
+                <span class="description">${escapeHtml(task.description.substring(0, 100))}${task.description.length > 100 ? '...' : ''}</span>
+                <span class="progress">${task.completed_chunks || 0}/${task.total_chunks || 0} chunks</span>
+            </a>
+        `).join('');
     }
+}
 
-    container.innerHTML = data.tasks.map(task => `
-        <a href="/project/${projectName}/task/${task.id}" class="task-card">
-            <span class="status status-${task.status}">${task.status}</span>
-            <span class="description">${escapeHtml(task.description.substring(0, 100))}${task.description.length > 100 ? '...' : ''}</span>
-            <span class="progress">${task.completed_chunks || 0}/${task.total_chunks || 0} chunks</span>
-        </a>
-    `).join('');
+async function loadCollabTasks() {
+    try {
+        const response = await fetch(`/project/${projectName}/chats`);
+        const data = await response.json();
+        const container = document.getElementById('tasks-container');
+
+        if (!data.tasks || data.tasks.length === 0) {
+            container.innerHTML = '<p class="empty-state">No collaborations yet. Start one above.</p>';
+            return;
+        }
+
+        container.innerHTML = data.tasks.map(task => `
+            <a href="/project/${projectName}/chat/${task.id}" class="task-card collab-card">
+                <span class="status status-${task.status}">${task.status}</span>
+                <span class="description">${escapeHtml(task.prompt)}</span>
+                <span class="progress">${task.iteration} / ${task.max_iterations} iterations</span>
+                ${task.approved ? '<span class="approved-badge">Approved</span>' : ''}
+            </a>
+        `).join('');
+    } catch (e) {
+        console.error('Failed to load collaborations:', e);
+    }
 }
 
 function escapeHtml(text) {
@@ -248,7 +280,6 @@ function getFileIcon(ext) {
 }
 
 function attachTreeListeners() {
-    // Directory click - toggle expand/collapse
     document.querySelectorAll('.tree-dir').forEach(el => {
         el.addEventListener('click', (e) => {
             const path = el.dataset.path;
@@ -268,7 +299,6 @@ function attachTreeListeners() {
         });
     });
 
-    // File click - open in viewer
     document.querySelectorAll('.tree-file').forEach(el => {
         el.addEventListener('click', () => {
             const path = el.dataset.path;
@@ -287,7 +317,6 @@ async function openFile(path) {
     contentEl.textContent = 'Loading...';
     contentEl.className = 'file-viewer-content';
 
-    // Highlight selected file
     document.querySelectorAll('.tree-file').forEach(el => el.classList.remove('selected'));
     document.querySelector(`.tree-file[data-path="${path}"]`)?.classList.add('selected');
 
@@ -298,7 +327,6 @@ async function openFile(path) {
         if (data.error) {
             contentEl.textContent = `Error: ${data.error}`;
         } else {
-            // Map extensions to highlight.js language names
             const langMap = {
                 'py': 'python',
                 'js': 'javascript',
@@ -327,14 +355,12 @@ async function openFile(path) {
 
             const lang = langMap[data.extension] || 'plaintext';
 
-            // Apply syntax highlighting manually (allows re-highlighting)
             if (typeof hljs !== 'undefined' && lang !== 'plaintext') {
                 try {
                     const highlighted = hljs.highlight(data.content, { language: lang });
                     contentEl.innerHTML = highlighted.value;
                     contentEl.className = `file-viewer-content hljs language-${lang}`;
                 } catch (e) {
-                    // Fallback if language not supported
                     contentEl.textContent = data.content;
                     contentEl.className = 'file-viewer-content';
                 }
@@ -355,160 +381,8 @@ document.getElementById('btn-close-viewer').addEventListener('click', () => {
 
 document.getElementById('btn-refresh-files').addEventListener('click', loadFileTree);
 
-// Flow Editor
-let editedFlow = null;
-
-function updateFlowDisplay(flow) {
-    const display = document.getElementById('flow-display');
-    if (!flow) {
-        display.innerHTML = '<span class="flow-badge-large">Default (Worker → Review)</span>';
-        return;
-    }
-
-    const stepTypes = flow.steps.map(s => {
-        const labels = { worker: 'W', manager: 'M', human: 'H' };
-        return labels[s.type] || s.type[0].toUpperCase();
-    }).join('→');
-
-    display.innerHTML = `<span class="flow-badge-large">${stepTypes} ×${flow.max_iterations}${flow.stop_on_approval ? '' : ' (all iterations)'}</span>`;
-}
-
-document.getElementById('btn-edit-flow').addEventListener('click', () => {
-    // Load current flow or default
-    editedFlow = currentProject?.default_flow ? JSON.parse(JSON.stringify(currentProject.default_flow)) : {
-        max_iterations: 6,
-        stop_on_approval: true,
-        steps: [
-            { type: 'worker', action: 'execute', optional: false },
-            { type: 'manager', action: 'review', optional: false },
-        ]
-    };
-    renderFlowEditor();
-    document.getElementById('flow-editor-modal').style.display = 'flex';
-});
-
-document.getElementById('btn-cancel-flow').addEventListener('click', () => {
-    document.getElementById('flow-editor-modal').style.display = 'none';
-});
-
-document.getElementById('btn-clear-flow').addEventListener('click', async () => {
-    try {
-        await fetch(`/project/${projectName}/flow`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ clear: true }),
-        });
-        document.getElementById('flow-editor-modal').style.display = 'none';
-        loadProject();
-    } catch (e) {
-        alert('Failed to clear flow: ' + e.message);
-    }
-});
-
-document.getElementById('btn-save-flow').addEventListener('click', async () => {
-    if (!editedFlow) return;
-
-    try {
-        const response = await fetch(`/project/${projectName}/flow`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(editedFlow),
-        });
-
-        if (response.ok) {
-            document.getElementById('flow-editor-modal').style.display = 'none';
-            loadProject();
-        } else {
-            const err = await response.json();
-            alert('Failed to save: ' + (err.details?.join(', ') || err.error));
-        }
-    } catch (e) {
-        alert('Failed to save flow: ' + e.message);
-    }
-});
-
-document.getElementById('btn-add-flow-step').addEventListener('click', () => {
-    if (!editedFlow) editedFlow = { max_iterations: 4, stop_on_approval: true, steps: [] };
-    editedFlow.steps.push({ type: 'worker', action: 'execute', optional: false });
-    renderFlowEditor();
-});
-
-document.getElementById('flow-preset-select').addEventListener('change', async (e) => {
-    const preset = e.target.value;
-    if (!preset) return;
-
-    try {
-        const response = await fetch('/flow/presets');
-        const data = await response.json();
-        const found = data.presets.find(p => p.name === preset);
-        if (found) {
-            editedFlow = JSON.parse(JSON.stringify(found.flow));
-            renderFlowEditor();
-        }
-    } catch (e) {
-        console.error('Failed to load preset:', e);
-    }
-});
-
-document.getElementById('flow-max-iterations').addEventListener('change', (e) => {
-    if (editedFlow) editedFlow.max_iterations = parseInt(e.target.value) || 4;
-});
-
-document.getElementById('flow-stop-on-approval').addEventListener('change', (e) => {
-    if (editedFlow) editedFlow.stop_on_approval = e.target.checked;
-});
-
-function renderFlowEditor() {
-    document.getElementById('flow-max-iterations').value = editedFlow?.max_iterations || 4;
-    document.getElementById('flow-stop-on-approval').checked = editedFlow?.stop_on_approval !== false;
-
-    const container = document.getElementById('flow-steps-list');
-    if (!editedFlow?.steps?.length) {
-        container.innerHTML = '<p class="empty-state">No steps</p>';
-        return;
-    }
-
-    container.innerHTML = editedFlow.steps.map((step, i) => `
-        <div class="flow-step-editor">
-            <span class="flow-step-drag">⋮⋮</span>
-            <select class="flow-step-type" onchange="updateFlowStep(${i}, 'type', this.value)">
-                <option value="worker" ${step.type === 'worker' ? 'selected' : ''}>Worker</option>
-                <option value="manager" ${step.type === 'manager' ? 'selected' : ''}>Manager</option>
-                <option value="human" ${step.type === 'human' ? 'selected' : ''}>Human</option>
-            </select>
-            <select class="flow-step-action" onchange="updateFlowStep(${i}, 'action', this.value)">
-                ${getActionsForType(step.type).map(a =>
-                    `<option value="${a}" ${step.action === a ? 'selected' : ''}>${a}</option>`
-                ).join('')}
-            </select>
-            <button class="btn-small btn-danger" onclick="removeFlowStep(${i})">×</button>
-        </div>
-    `).join('');
-}
-
-function getActionsForType(type) {
-    return { worker: ['execute', 'write', 'revise'], manager: ['review', 'feedback', 'approve'], human: ['review', 'approve'] }[type] || ['execute'];
-}
-
-function updateFlowStep(index, field, value) {
-    if (!editedFlow?.steps?.[index]) return;
-    editedFlow.steps[index][field] = value;
-    if (field === 'type') {
-        editedFlow.steps[index].action = getActionsForType(value)[0];
-    }
-    renderFlowEditor();
-}
-
-function removeFlowStep(index) {
-    if (editedFlow?.steps) {
-        editedFlow.steps.splice(index, 1);
-        renderFlowEditor();
-    }
-}
-
-let currentProject = null;
-
 // Initialize
+loadExamples();
 loadProject();
 loadFileTree();
 </script>

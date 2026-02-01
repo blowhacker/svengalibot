@@ -1,0 +1,385 @@
+{% extends "base.html" %}
+
+{% block title %}Task - {{ project_name }}{% endblock %}
+
+{% block content %}
+<div class="chat-layout">
+    <!-- Sidebar with file explorer -->
+    <div class="chat-sidebar">
+        <div class="sidebar-header">
+            <a href="/project/{{ project_name }}" class="back-link">&larr; {{ project_name }}</a>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">Files</div>
+            <div id="file-tree" class="file-tree-mini"></div>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">Status</div>
+            <div class="status-info">
+                <div class="status-row">
+                    <span>Status:</span>
+                    <span id="task-status" class="status status-pending">pending</span>
+                </div>
+                <div class="status-row">
+                    <span>Iteration:</span>
+                    <span id="iteration-count">0 / 10</span>
+                </div>
+            </div>
+        </div>
+        <div class="sidebar-controls">
+            <button id="btn-pause" class="btn-secondary btn-full">Pause</button>
+            <button id="btn-resume" class="btn-secondary btn-full" style="display:none">Resume</button>
+            <button id="btn-stop" class="btn-danger btn-full">Stop</button>
+        </div>
+    </div>
+
+    <!-- Main chat area -->
+    <div class="chat-main">
+        <!-- Collaboration prompt header -->
+        <div class="chat-header">
+            <div class="prompt-display" id="prompt-display">
+                <div class="prompt-label">Collaboration Prompt</div>
+                <div class="prompt-text" id="prompt-text"></div>
+            </div>
+        </div>
+
+        <!-- Chat messages -->
+        <div class="chat-messages" id="chat-messages">
+            <!-- Messages will be inserted here -->
+        </div>
+
+        <!-- Input area (for manual intervention if needed) -->
+        <div class="chat-input" id="chat-input" style="display:none">
+            <textarea id="user-input" placeholder="Send a message to intervene..." rows="2"></textarea>
+            <button id="btn-send" class="btn-primary">Send</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const projectName = '{{ project_name }}';
+const taskId = '{{ task_id }}';
+let currentTask = null;
+
+// Load task and connect to stream
+async function loadTask() {
+    const response = await fetch(`/project/${projectName}/task/${taskId}/json`);
+    if (!response.ok) {
+        alert('Task not found');
+        window.location.href = `/project/${projectName}`;
+        return;
+    }
+    currentTask = await response.json();
+    updateUI(currentTask);
+}
+
+function updateUI(task) {
+    // Update status
+    const statusEl = document.getElementById('task-status');
+    statusEl.textContent = task.status;
+    statusEl.className = `status status-${task.status}`;
+
+    // Update iteration
+    document.getElementById('iteration-count').textContent =
+        `${task.iteration || 0} / ${task.max_iterations || 10}`;
+
+    // Update prompt
+    document.getElementById('prompt-text').textContent = task.prompt || task.description || '';
+
+    // Update controls
+    const btnPause = document.getElementById('btn-pause');
+    const btnResume = document.getElementById('btn-resume');
+
+    if (task.status === 'paused' || task.status === 'awaiting_approval') {
+        btnPause.style.display = 'none';
+        btnResume.style.display = 'block';
+    } else if (task.status === 'completed' || task.status === 'failed' || task.status === 'done') {
+        btnPause.style.display = 'none';
+        btnResume.style.display = 'none';
+    } else {
+        btnPause.style.display = 'block';
+        btnResume.style.display = 'none';
+    }
+
+    // Render existing messages
+    if (task.messages) {
+        renderMessages(task.messages);
+    }
+}
+
+function renderMessages(messages) {
+    const container = document.getElementById('chat-messages');
+    container.innerHTML = messages.map(msg => renderMessage(msg)).join('');
+    container.scrollTop = container.scrollHeight;
+}
+
+function renderMessage(msg) {
+    const roleClass = msg.role || 'system';
+    const provider = msg.provider || roleClass;
+    const icon = getProviderIcon(provider);
+    const label = getProviderLabel(provider, msg.role);
+
+    return `
+        <div class="chat-message ${roleClass}">
+            <div class="message-header">
+                <span class="message-icon">${icon}</span>
+                <span class="message-label">${label}</span>
+                <span class="message-time">${formatTime(msg.timestamp)}</span>
+            </div>
+            <div class="message-content">${formatContent(msg.content, msg.role)}</div>
+        </div>
+    `;
+}
+
+function appendMessage(msg) {
+    const container = document.getElementById('chat-messages');
+    container.insertAdjacentHTML('beforeend', renderMessage(msg));
+    container.scrollTop = container.scrollHeight;
+}
+
+function appendToLastMessage(content) {
+    const container = document.getElementById('chat-messages');
+    const lastMsg = container.querySelector('.chat-message:last-child .message-content');
+    if (lastMsg) {
+        lastMsg.textContent += content;
+        container.scrollTop = container.scrollHeight;
+    }
+}
+
+function getProviderIcon(provider) {
+    const icons = {
+        'claude': '🤖',
+        'openai': '🧠',
+        'user': '👤',
+        'system': '⚙️',
+        'worker': '🤖',
+        'reviewer': '🧠',
+    };
+    return icons[provider] || '💬';
+}
+
+function getProviderLabel(provider, role) {
+    if (provider === 'claude' || role === 'worker') return 'Claude (Worker)';
+    if (provider === 'openai' || role === 'reviewer') return 'OpenAI (Reviewer)';
+    if (provider === 'user' || role === 'user') return 'You';
+    return 'System';
+}
+
+function formatTime(timestamp) {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatContent(content, role) {
+    // Escape HTML
+    const div = document.createElement('div');
+    div.textContent = content || '';
+    let escaped = div.innerHTML;
+
+    // Convert markdown-style code blocks
+    escaped = escaped.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>');
+    escaped = escaped.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+    // Convert newlines
+    escaped = escaped.replace(/\n/g, '<br>');
+
+    return escaped;
+}
+
+// SSE Connection
+function connectStream() {
+    const evtSource = new EventSource(`/project/${projectName}/task/${taskId}/stream`);
+
+    evtSource.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            handleStreamEvent(data);
+        } catch (e) {
+            console.error('Failed to parse event:', e);
+        }
+    };
+
+    evtSource.onerror = () => {
+        console.log('Stream connection lost, reconnecting...');
+        evtSource.close();
+        setTimeout(connectStream, 3000);
+    };
+}
+
+function handleStreamEvent(data) {
+    switch (data.type) {
+        case 'state':
+            if (data.task) updateUI(data.task);
+            break;
+
+        case 'message':
+            // New complete message
+            appendMessage(data.data);
+            break;
+
+        case 'message_chunk':
+            // Streaming chunk - append to last message
+            appendToLastMessage(data.data.content);
+            break;
+
+        case 'worker_started':
+            appendMessage({
+                role: 'worker',
+                provider: 'claude',
+                content: '',
+                timestamp: new Date().toISOString(),
+            });
+            break;
+
+        case 'chunk_output':
+            // Worker output streaming
+            appendToLastMessage(data.data?.content || '');
+            break;
+
+        case 'chunk_reviewing':
+            appendMessage({
+                role: 'system',
+                provider: 'system',
+                content: '🔍 OpenAI is reviewing...',
+                timestamp: new Date().toISOString(),
+            });
+            break;
+
+        case 'chunk_approved':
+            appendMessage({
+                role: 'reviewer',
+                provider: 'openai',
+                content: '✅ Approved: ' + (data.data?.notes || 'Work looks good!'),
+                timestamp: new Date().toISOString(),
+            });
+            updateIterationCount();
+            break;
+
+        case 'chunk_rejected':
+            const review = data.data?.review || {};
+            appendMessage({
+                role: 'reviewer',
+                provider: 'openai',
+                content: '❌ Changes requested:\n\n' + (review.feedback_for_retry || review.summary || 'Please revise.'),
+                timestamp: new Date().toISOString(),
+            });
+            updateIterationCount();
+            break;
+
+        case 'flow_iteration':
+            document.getElementById('iteration-count').textContent =
+                `${data.data?.iteration || 0} / ${data.data?.max_iterations || 10}`;
+            break;
+
+        case 'task_completed':
+            appendMessage({
+                role: 'system',
+                provider: 'system',
+                content: '🎉 Task completed successfully!',
+                timestamp: new Date().toISOString(),
+            });
+            loadTask();
+            break;
+
+        case 'task_paused':
+            appendMessage({
+                role: 'system',
+                provider: 'system',
+                content: '⏸️ Task paused. ' + (data.data?.message || ''),
+                timestamp: new Date().toISOString(),
+            });
+            loadTask();
+            break;
+
+        case 'task_failed':
+        case 'error':
+            appendMessage({
+                role: 'system',
+                provider: 'system',
+                content: '❌ Error: ' + (data.data?.error || 'Unknown error'),
+                timestamp: new Date().toISOString(),
+            });
+            loadTask();
+            break;
+
+        case 'usage_update':
+            // Could show cost badge here
+            break;
+
+        case 'heartbeat':
+        case 'connected':
+            break;
+
+        default:
+            console.log('Unhandled event:', data.type, data);
+    }
+}
+
+function updateIterationCount() {
+    const el = document.getElementById('iteration-count');
+    const parts = el.textContent.split(' / ');
+    const current = parseInt(parts[0]) + 1;
+    el.textContent = `${current} / ${parts[1]}`;
+}
+
+// Controls
+document.getElementById('btn-pause').addEventListener('click', async () => {
+    await fetch(`/project/${projectName}/task/${taskId}/pause`, { method: 'POST' });
+    loadTask();
+});
+
+document.getElementById('btn-resume').addEventListener('click', async () => {
+    await fetch(`/project/${projectName}/task/${taskId}/resume`, { method: 'POST' });
+    loadTask();
+});
+
+document.getElementById('btn-stop').addEventListener('click', async () => {
+    if (confirm('Stop this task?')) {
+        await fetch(`/project/${projectName}/task/${taskId}/cancel`, { method: 'POST' });
+        loadTask();
+    }
+});
+
+// File tree (simplified)
+async function loadFileTree() {
+    try {
+        const response = await fetch(`/project/${projectName}/files`);
+        const data = await response.json();
+        renderFileTree(data.tree);
+    } catch (e) {
+        console.error('Failed to load files:', e);
+    }
+}
+
+function renderFileTree(items, depth = 0) {
+    const container = document.getElementById('file-tree');
+    if (!items || items.length === 0) {
+        container.innerHTML = '<div class="empty-state">No files yet</div>';
+        return;
+    }
+
+    container.innerHTML = items.slice(0, 20).map(item => {
+        const icon = item.type === 'directory' ? '📁' : getFileIcon(item.extension);
+        const indent = depth * 12;
+        return `<div class="file-item" style="padding-left:${indent}px">${icon} ${item.name}</div>`;
+    }).join('');
+
+    if (items.length > 20) {
+        container.innerHTML += `<div class="file-item muted">...and ${items.length - 20} more</div>`;
+    }
+}
+
+function getFileIcon(ext) {
+    const icons = { 'py': '🐍', 'js': '📜', 'md': '📝', 'json': '📋', 'html': '🌐', 'css': '🎨' };
+    return icons[ext] || '📄';
+}
+
+// Initialize
+loadTask();
+loadFileTree();
+connectStream();
+</script>
+{% endblock %}

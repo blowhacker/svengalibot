@@ -6,6 +6,8 @@ import queue
 import threading
 import yaml
 
+from app.conversation import CollaborationTask, TaskStatus as ConvTaskStatus, Message, get_example_prompts
+
 main_bp = Blueprint("main", __name__)
 
 # Global event queues for SSE (task_id -> list of queues)
@@ -828,6 +830,600 @@ def get_vm_status():
     except Exception:
         pass
     return jsonify({"error": "VM pool not configured"})
+
+
+# ============================================================
+# Chat-based Collaboration Task Routes
+# ============================================================
+
+# Store for collaboration tasks (in-memory for now, persisted to project dir)
+_collab_tasks: dict[str, dict[str, CollaborationTask]] = {}  # project_name -> {task_id -> task}
+_collab_tasks_lock = threading.Lock()
+
+
+def _get_collab_task(project_name: str, task_id: str) -> CollaborationTask:
+    """Get a collaboration task from memory or disk."""
+    with _collab_tasks_lock:
+        if project_name in _collab_tasks and task_id in _collab_tasks[project_name]:
+            return _collab_tasks[project_name][task_id]
+
+    # Try to load from disk
+    pm = get_project_manager()
+    project = pm.get_project(project_name)
+    if not project:
+        return None
+
+    task_file = project.path / ".svengali" / "chats" / f"{task_id}.json"
+    if task_file.exists():
+        try:
+            data = json.loads(task_file.read_text())
+            task = CollaborationTask.from_dict(data)
+            with _collab_tasks_lock:
+                _collab_tasks.setdefault(project_name, {})[task_id] = task
+            return task
+        except Exception:
+            pass
+
+    return None
+
+
+def _save_collab_task(project_name: str, task: CollaborationTask):
+    """Save a collaboration task to memory and disk (requires Flask context)."""
+    with _collab_tasks_lock:
+        _collab_tasks.setdefault(project_name, {})[task.id] = task
+
+    # Persist to disk
+    pm = get_project_manager()
+    project = pm.get_project(project_name)
+    if project:
+        _save_collab_task_direct(project, task)
+
+
+def _save_collab_task_direct(project, task: CollaborationTask):
+    """Save a collaboration task to disk (no Flask context needed)."""
+    with _collab_tasks_lock:
+        _collab_tasks.setdefault(project.name, {})[task.id] = task
+
+    chats_dir = project.path / ".svengali" / "chats"
+    chats_dir.mkdir(parents=True, exist_ok=True)
+    task_file = chats_dir / f"{task.id}.json"
+    task_file.write_text(json.dumps(task.to_dict(), indent=2))
+
+
+def _list_collab_tasks(project_name: str) -> list[CollaborationTask]:
+    """List all collaboration tasks for a project."""
+    pm = get_project_manager()
+    project = pm.get_project(project_name)
+    if not project:
+        return []
+
+    chats_dir = project.path / ".svengali" / "chats"
+    if not chats_dir.exists():
+        return []
+
+    tasks = []
+    for task_file in chats_dir.glob("*.json"):
+        try:
+            data = json.loads(task_file.read_text())
+            task = CollaborationTask.from_dict(data)
+            tasks.append(task)
+        except Exception:
+            continue
+
+    return sorted(tasks, key=lambda t: t.created_at, reverse=True)
+
+
+@main_bp.route("/prompts/examples")
+def get_example_prompts_route():
+    """Get example collaboration prompts."""
+    return jsonify({"prompts": get_example_prompts()})
+
+
+@main_bp.route("/project/<project_name>/chat", methods=["POST"])
+def create_collab_task(project_name):
+    """Create a new chat/collaboration task."""
+    import uuid
+    from datetime import datetime
+
+    data = request.get_json()
+    prompt = data.get("prompt", "").strip()
+
+    if not prompt:
+        return jsonify({"error": "Collaboration prompt is required"}), 400
+
+    pm = get_project_manager()
+    project = pm.get_project(project_name)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+
+    # Create task
+    task_id = f"chat_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    task = CollaborationTask(
+        id=task_id,
+        prompt=prompt,
+        max_iterations=data.get("max_iterations", 10),
+        worker_provider=data.get("worker_provider", "claude"),
+        reviewer_provider=data.get("reviewer_provider", "openai"),
+    )
+
+    # Add initial system message
+    task.add_message(
+        role="system",
+        content=f"Collaboration started: {prompt}",
+        provider="system",
+    )
+
+    _save_collab_task(project_name, task)
+
+    # Get necessary objects before starting thread (within app context)
+    app = current_app._get_current_object()
+    orchestrator = get_orchestrator()
+    projects_dir = current_app.config["PROJECTS_DIR"]
+    guide_path = current_app.config["GUIDE_PATH"]
+
+    # Start the collaboration in background
+    _start_collaboration(project_name, task_id, app, orchestrator, projects_dir, guide_path)
+
+    return jsonify({
+        "id": task.id,
+        "project": project_name,
+        "status": task.status.value,
+    })
+
+
+def _start_collaboration(project_name: str, task_id: str, app, orchestrator, projects_dir, guide_path):
+    """Start collaboration execution in background thread."""
+    thread = threading.Thread(
+        target=_run_collaboration,
+        args=(project_name, task_id, app, orchestrator, projects_dir, guide_path),
+        daemon=True,
+    )
+    thread.start()
+
+
+def _run_collaboration(project_name: str, task_id: str, app, orchestrator, projects_dir, guide_path):
+    """Execute the collaboration loop between worker and reviewer."""
+    import time
+    from app.state import ProjectManager
+
+    # Get task from memory/disk
+    with _collab_tasks_lock:
+        if project_name in _collab_tasks and task_id in _collab_tasks[project_name]:
+            task = _collab_tasks[project_name][task_id]
+        else:
+            return
+
+    # Get project using projects_dir directly (no Flask context needed)
+    pm = ProjectManager(projects_dir)
+    project = pm.get_project(project_name)
+    if not project:
+        return
+
+    # Update status
+    task.status = ConvTaskStatus.RUNNING
+    _save_collab_task_direct(project, task)
+
+    # Broadcast status update
+    _broadcast_collab_event(project_name, task_id, {
+        "type": "state",
+        "task": task.to_dict(),
+    })
+
+    try:
+        # Load guide (no Flask context needed)
+        guide = _load_guide_direct(project, guide_path)
+
+        for iteration in range(task.max_iterations):
+            task.iteration = iteration + 1
+            _save_collab_task_direct(project, task)
+
+            # Broadcast iteration start
+            _broadcast_collab_event(project_name, task_id, {
+                "type": "flow_iteration",
+                "data": {"iteration": iteration + 1, "max_iterations": task.max_iterations},
+            })
+
+            # Worker turn (Claude)
+            _broadcast_collab_event(project_name, task_id, {
+                "type": "worker_started",
+                "data": {"message": "Claude is working..."},
+            })
+
+            worker_output = _run_worker_turn(project, task, guide, orchestrator)
+
+            if worker_output.get("paused"):
+                return  # Task was paused
+
+            # Add worker message
+            worker_msg = task.add_message(
+                role="worker",
+                content=worker_output.get("summary", "") or worker_output.get("output", ""),
+                provider="claude",
+                metadata={"diff": worker_output.get("diff", "")},
+            )
+            _save_collab_task_direct(project, task)
+
+            _broadcast_collab_event(project_name, task_id, {
+                "type": "message",
+                "data": worker_msg.to_dict(),
+            })
+
+            # Reviewer turn (OpenAI)
+            _broadcast_collab_event(project_name, task_id, {
+                "type": "chunk_reviewing",
+                "data": {"message": "OpenAI is reviewing..."},
+            })
+
+            review = _run_reviewer_turn(project, task, worker_output, guide, orchestrator)
+
+            # Check for approval
+            is_approved = review.get("decision") == "approved" or review.get("approved", False)
+
+            if is_approved:
+                reviewer_msg = task.add_message(
+                    role="reviewer",
+                    content=review.get("notes", review.get("summary", "Work approved!")),
+                    provider="openai",
+                    metadata={"decision": "approved"},
+                )
+                _save_collab_task_direct(project, task)
+
+                _broadcast_collab_event(project_name, task_id, {
+                    "type": "chunk_approved",
+                    "data": {"notes": review.get("notes", "Approved!")},
+                })
+
+                _broadcast_collab_event(project_name, task_id, {
+                    "type": "message",
+                    "data": reviewer_msg.to_dict(),
+                })
+
+                # Task complete
+                task.status = ConvTaskStatus.COMPLETED
+                task.approved = True
+                _save_collab_task_direct(project, task)
+
+                _broadcast_collab_event(project_name, task_id, {
+                    "type": "task_completed",
+                    "data": {"message": "Collaboration completed successfully!"},
+                })
+                return
+
+            else:
+                # Add feedback message
+                feedback_text = review.get("feedback_for_retry", review.get("summary", "Please revise."))
+                reviewer_msg = task.add_message(
+                    role="reviewer",
+                    content=feedback_text,
+                    provider="openai",
+                    metadata={"decision": "rejected", "review": review},
+                )
+                _save_collab_task_direct(project, task)
+
+                _broadcast_collab_event(project_name, task_id, {
+                    "type": "chunk_rejected",
+                    "data": {"review": review},
+                })
+
+                _broadcast_collab_event(project_name, task_id, {
+                    "type": "message",
+                    "data": reviewer_msg.to_dict(),
+                })
+
+            # Brief pause between iterations
+            time.sleep(0.5)
+
+        # Max iterations reached
+        task.status = ConvTaskStatus.COMPLETED
+        task.add_message(
+            role="system",
+            content=f"Max iterations ({task.max_iterations}) reached.",
+            provider="system",
+        )
+        _save_collab_task_direct(project, task)
+
+        _broadcast_collab_event(project_name, task_id, {
+            "type": "task_completed",
+            "data": {"message": f"Max iterations ({task.max_iterations}) reached."},
+        })
+
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        task.status = ConvTaskStatus.FAILED
+        task.error = error_msg
+        task.add_message(
+            role="system",
+            content=f"Error: {error_msg}",
+            provider="system",
+        )
+        _save_collab_task_direct(project, task)
+
+        _broadcast_collab_event(project_name, task_id, {
+            "type": "error",
+            "data": {"error": error_msg},
+        })
+
+
+def _load_guide_for_project(project) -> dict:
+    """Load guide for a project (requires Flask context)."""
+    guide_path = current_app.config["GUIDE_PATH"]
+    return _load_guide_direct(project, guide_path)
+
+
+def _load_guide_direct(project, guide_path) -> dict:
+    """Load guide for a project (no Flask context needed)."""
+    if project.guide_path.exists():
+        with open(project.guide_path) as f:
+            return yaml.safe_load(f) or {}
+    if guide_path and guide_path.exists():
+        with open(guide_path) as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def _run_worker_turn(project, task: CollaborationTask, guide: dict, orchestrator) -> dict:
+    """Run a single worker turn using Claude."""
+    from app.worker import Worker
+
+    # Get recent context from conversation
+    recent_messages = task.messages[-5:] if task.messages else []
+    context = "\n".join([
+        f"[{m.role}]: {m.content[:500]}" for m in recent_messages
+    ])
+
+    # Build task spec from prompt
+    chunk_spec = {
+        "title": f"Iteration {task.iteration}",
+        "description": task.prompt,
+        "acceptance_criteria": ["Complete the requested work", "Address any previous feedback"],
+    }
+
+    # Get previous feedback if any
+    previous_feedback = ""
+    for msg in reversed(task.messages):
+        if msg.role == "reviewer":
+            previous_feedback = msg.content
+            break
+
+    worker = Worker(project.path)
+    output_buffer = []
+
+    def on_output(line: str):
+        output_buffer.append(line)
+        _broadcast_collab_event(project.name, task.id, {
+            "type": "chunk_output",
+            "data": {"content": line},
+        })
+
+    # Check if paused
+    task_key = f"{project.name}:{task.id}"
+    if task_key in _paused_collab_tasks:
+        return {"paused": True}
+
+    result = worker.execute_local(
+        chunk_spec,
+        context=context,
+        guide=guide,
+        previous_feedback=previous_feedback,
+        on_output=on_output,
+        baseline_commit="",
+    )
+
+    return {
+        "success": result.success,
+        "output": "".join(output_buffer),
+        "diff": result.diff,
+        "summary": result.summary,
+        "error": result.error,
+    }
+
+
+def _run_reviewer_turn(project, task: CollaborationTask, worker_output: dict, guide: dict, orchestrator) -> dict:
+    """Run a single reviewer turn using OpenAI."""
+    chunk_spec = {
+        "title": f"Iteration {task.iteration}",
+        "description": task.prompt,
+        "acceptance_criteria": ["Complete the requested work", "Address any previous feedback"],
+    }
+
+    review, usage = orchestrator.manager.review_chunk(
+        chunk_spec,
+        worker_output.get("diff", ""),
+        worker_output.get("summary", ""),
+        guide,
+    )
+
+    return review
+
+
+# Paused collaboration tasks
+_paused_collab_tasks: set[str] = set()
+
+
+def _broadcast_collab_event(project_name: str, task_id: str, event: dict):
+    """Broadcast event to SSE subscribers for a collaboration task."""
+    stream_key = f"{project_name}:{task_id}"
+    event["task_id"] = task_id
+    event["project"] = project_name
+
+    with _queues_lock:
+        if stream_key not in _event_buffer:
+            _event_buffer[stream_key] = []
+        _event_buffer[stream_key].append(event)
+        if len(_event_buffer[stream_key]) > MAX_BUFFERED_EVENTS:
+            _event_buffer[stream_key] = _event_buffer[stream_key][-MAX_BUFFERED_EVENTS:]
+
+        if stream_key in _event_queues:
+            for q in _event_queues[stream_key]:
+                try:
+                    q.put_nowait(event)
+                except queue.Full:
+                    pass
+
+
+@main_bp.route("/project/<project_name>/chat/<task_id>")
+def get_collab_task_page(project_name, task_id):
+    """Chat task view page."""
+    pm = get_project_manager()
+    project = pm.get_project(project_name)
+    if not project:
+        return "Project not found", 404
+
+    task = _get_collab_task(project_name, task_id)
+    if not task:
+        return "Task not found", 404
+
+    return render_template("chat_task.html", project_name=project_name, task_id=task_id)
+
+
+@main_bp.route("/project/<project_name>/chat/<task_id>/json")
+def get_collab_task_json(project_name, task_id):
+    """Get collaboration task as JSON."""
+    task = _get_collab_task(project_name, task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+
+    return jsonify(task.to_dict())
+
+
+@main_bp.route("/project/<project_name>/chat/<task_id>/stream")
+def stream_collab_task(project_name, task_id):
+    """SSE endpoint for live collaboration output."""
+    task = _get_collab_task(project_name, task_id)
+    initial_state = task.to_dict() if task else None
+    if initial_state:
+        initial_state["project"] = project_name
+
+    stream_key = f"{project_name}:{task_id}"
+    with _queues_lock:
+        buffered = list(_event_buffer.get(stream_key, []))
+
+    def generate():
+        q = queue.Queue(maxsize=100)
+
+        with _queues_lock:
+            if stream_key not in _event_queues:
+                _event_queues[stream_key] = []
+            _event_queues[stream_key].append(q)
+
+        try:
+            yield f"data: {json.dumps({'type': 'connected', 'project': project_name, 'task_id': task_id})}\n\n"
+
+            if initial_state:
+                yield f"data: {json.dumps({'type': 'state', 'task': initial_state})}\n\n"
+
+            for event in buffered:
+                yield f"data: {json.dumps(event)}\n\n"
+
+            while True:
+                try:
+                    event = q.get(timeout=30)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except queue.Empty:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+
+        finally:
+            with _queues_lock:
+                if stream_key in _event_queues:
+                    try:
+                        _event_queues[stream_key].remove(q)
+                    except ValueError:
+                        pass
+                    if not _event_queues[stream_key]:
+                        del _event_queues[stream_key]
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        }
+    )
+
+
+@main_bp.route("/project/<project_name>/chat/<task_id>/pause", methods=["POST"])
+def pause_collab_task(project_name, task_id):
+    """Pause a running collaboration task."""
+    task = _get_collab_task(project_name, task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+
+    task_key = f"{project_name}:{task_id}"
+    _paused_collab_tasks.add(task_key)
+    task.status = ConvTaskStatus.PAUSED
+    _save_collab_task(project_name, task)
+
+    _broadcast_collab_event(project_name, task_id, {
+        "type": "task_paused",
+        "data": {"message": "Task paused by user"},
+    })
+
+    return jsonify({"status": "paused"})
+
+
+@main_bp.route("/project/<project_name>/chat/<task_id>/resume", methods=["POST"])
+def resume_collab_task(project_name, task_id):
+    """Resume a paused collaboration task."""
+    task = _get_collab_task(project_name, task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+
+    task_key = f"{project_name}:{task_id}"
+    _paused_collab_tasks.discard(task_key)
+
+    # Get necessary objects before starting thread (within app context)
+    app = current_app._get_current_object()
+    orchestrator = get_orchestrator()
+    projects_dir = current_app.config["PROJECTS_DIR"]
+    guide_path = current_app.config["GUIDE_PATH"]
+
+    # Restart the collaboration from current iteration
+    _start_collaboration(project_name, task_id, app, orchestrator, projects_dir, guide_path)
+
+    return jsonify({"status": "resumed"})
+
+
+@main_bp.route("/project/<project_name>/chat/<task_id>/cancel", methods=["POST"])
+def cancel_collab_task(project_name, task_id):
+    """Cancel a collaboration task."""
+    task = _get_collab_task(project_name, task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+
+    task.status = ConvTaskStatus.FAILED
+    task.error = "Cancelled by user"
+    _save_collab_task(project_name, task)
+
+    _broadcast_collab_event(project_name, task_id, {
+        "type": "task_failed",
+        "data": {"error": "Cancelled by user"},
+    })
+
+    return jsonify({"status": "cancelled"})
+
+
+@main_bp.route("/project/<project_name>/chats")
+def list_collab_tasks(project_name):
+    """List all collaboration tasks for a project."""
+    tasks = _list_collab_tasks(project_name)
+    return jsonify({
+        "project": project_name,
+        "tasks": [
+            {
+                "id": t.id,
+                "prompt": t.prompt[:100] + ("..." if len(t.prompt) > 100 else ""),
+                "status": t.status.value,
+                "iteration": t.iteration,
+                "max_iterations": t.max_iterations,
+                "created_at": t.created_at,
+                "approved": t.approved,
+            }
+            for t in tasks
+        ]
+    })
 
 
 # ============================================================
