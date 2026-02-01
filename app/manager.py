@@ -97,16 +97,38 @@ class Manager:
 
         # Last resort: try to repair common issues
         # Sometimes responses get truncated - try to close open structures
-        if start != -1 and depth > 0:
-            logger.warning(f"JSON appears truncated (depth={depth}), attempting repair")
-            # Find the last complete key-value pair
+        if start != -1:
+            logger.warning(f"JSON appears truncated (depth={depth}, in_string={in_string}), attempting repair")
             partial = text[start:]
-            # Add closing braces
-            repaired = partial + ('}' * depth)
-            try:
-                return json.loads(repaired)
-            except json.JSONDecodeError:
-                pass
+
+            # Try multiple repair strategies
+            repairs_to_try = []
+
+            if in_string:
+                # We're inside an unclosed string - close it first
+                # Strategy 1: Close string, close all braces
+                repairs_to_try.append(partial + '"' + ('}' * max(depth, 1)))
+                # Strategy 2: Close string with empty value continuation
+                repairs_to_try.append(partial + '..."' + ('}' * max(depth, 1)))
+                # Strategy 3: Truncate to last complete key-value and close
+                last_comma = partial.rfind('",')
+                if last_comma > 0:
+                    repairs_to_try.append(partial[:last_comma + 1] + ('}' * max(depth, 1)))
+
+            if depth > 0:
+                # Just need closing braces
+                repairs_to_try.append(partial + ('}' * depth))
+
+            # Also try closing any open arrays
+            repairs_to_try.append(partial + (']' * partial.count('[')) + ('}' * max(depth, 1)))
+
+            for repaired in repairs_to_try:
+                try:
+                    result = json.loads(repaired)
+                    logger.info(f"JSON repair successful")
+                    return result
+                except json.JSONDecodeError:
+                    continue
 
         raise ValueError(f"Could not extract JSON from response: {text[:200]}...")
 
