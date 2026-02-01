@@ -38,6 +38,9 @@ class Manager:
 
     def _extract_json(self, text: str) -> dict:
         """Extract JSON from response text."""
+        if not text:
+            raise ValueError("Empty response from API")
+
         # Try to find JSON in code blocks first
         json_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
         if json_match:
@@ -53,27 +56,57 @@ class Manager:
             pass
 
         # Try to find JSON object - match balanced braces
-        # Find the first { and try to parse from there
+        # Handle strings properly to avoid counting braces inside string values
         start = text.find('{')
         if start != -1:
-            # Try parsing from each { to find valid JSON
             depth = 0
+            in_string = False
+            escape_next = False
+
             for i, char in enumerate(text[start:], start):
-                if char == '{':
-                    depth += 1
-                elif char == '}':
-                    depth -= 1
-                    if depth == 0:
-                        try:
-                            return json.loads(text[start:i+1])
-                        except json.JSONDecodeError:
-                            # Try next opening brace
-                            next_start = text.find('{', start + 1)
-                            if next_start != -1:
-                                start = next_start
-                                depth = 0
-                            else:
-                                break
+                if escape_next:
+                    escape_next = False
+                    continue
+
+                if char == '\\' and in_string:
+                    escape_next = True
+                    continue
+
+                if char == '"' and not escape_next:
+                    in_string = not in_string
+                    continue
+
+                if not in_string:
+                    if char == '{':
+                        depth += 1
+                    elif char == '}':
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                return json.loads(text[start:i+1])
+                            except json.JSONDecodeError as e:
+                                logger.warning(f"JSON parse failed at position {i}: {e}")
+                                # Try next opening brace
+                                next_start = text.find('{', start + 1)
+                                if next_start != -1:
+                                    start = next_start
+                                    depth = 0
+                                    in_string = False
+                                else:
+                                    break
+
+        # Last resort: try to repair common issues
+        # Sometimes responses get truncated - try to close open structures
+        if start != -1 and depth > 0:
+            logger.warning(f"JSON appears truncated (depth={depth}), attempting repair")
+            # Find the last complete key-value pair
+            partial = text[start:]
+            # Add closing braces
+            repaired = partial + ('}' * depth)
+            try:
+                return json.loads(repaired)
+            except json.JSONDecodeError:
+                pass
 
         raise ValueError(f"Could not extract JSON from response: {text[:200]}...")
 
