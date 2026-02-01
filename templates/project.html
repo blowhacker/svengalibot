@@ -270,12 +270,21 @@ async function openFile(path) {
             };
 
             const lang = langMap[data.extension] || 'plaintext';
-            contentEl.className = `file-viewer-content language-${lang}`;
-            contentEl.textContent = data.content;
 
-            // Apply syntax highlighting
-            if (typeof hljs !== 'undefined') {
-                hljs.highlightElement(contentEl);
+            // Apply syntax highlighting manually (allows re-highlighting)
+            if (typeof hljs !== 'undefined' && lang !== 'plaintext') {
+                try {
+                    const highlighted = hljs.highlight(data.content, { language: lang });
+                    contentEl.innerHTML = highlighted.value;
+                    contentEl.className = `file-viewer-content hljs language-${lang}`;
+                } catch (e) {
+                    // Fallback if language not supported
+                    contentEl.textContent = data.content;
+                    contentEl.className = 'file-viewer-content';
+                }
+            } else {
+                contentEl.textContent = data.content;
+                contentEl.className = 'file-viewer-content';
             }
         }
     } catch (e) {
