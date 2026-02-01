@@ -81,11 +81,16 @@ let currentTask = null;
 let displayedMessageIds = new Set(); // Track displayed messages to avoid duplicates
 let streamingMessageEl = null; // Current streaming message element
 
-// Configure marked for safe rendering
-marked.setOptions({
-    breaks: true,
-    gfm: true,
-});
+// Configure marked for safe rendering (if loaded)
+if (typeof marked !== 'undefined') {
+    marked.setOptions({
+        breaks: true,
+        gfm: true,
+    });
+    console.log('Marked.js loaded successfully');
+} else {
+    console.warn('Marked.js not loaded, using fallback markdown');
+}
 
 // Load task and connect to stream
 async function loadTask() {
@@ -236,16 +241,38 @@ function formatContent(content, role) {
     if (!content) return '';
 
     // Use marked.js for markdown rendering
-    try {
-        // Sanitize by escaping HTML first, then parse markdown
-        let html = marked.parse(content);
-        return html;
-    } catch (e) {
-        // Fallback to basic escaping
-        const div = document.createElement('div');
-        div.textContent = content;
-        return div.innerHTML.replace(/\n/g, '<br>');
+    if (typeof marked !== 'undefined') {
+        try {
+            return marked.parse(content);
+        } catch (e) {
+            console.error('Marked parse error:', e);
+        }
     }
+
+    // Fallback: basic markdown rendering
+    return basicMarkdown(content);
+}
+
+function basicMarkdown(text) {
+    // Escape HTML first
+    const div = document.createElement('div');
+    div.textContent = text;
+    let html = div.innerHTML;
+
+    // Convert markdown syntax
+    html = html
+        .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
+        .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+        .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+        .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.+?)\*/g, '<em>$1</em>')
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/^- (.+)$/gm, '• $1<br>')
+        .replace(/\n\n/g, '<br><br>')
+        .replace(/\n/g, '<br>');
+
+    return html;
 }
 
 // SSE Connection
@@ -506,12 +533,28 @@ async function openFile(path) {
         const codeEl = preEl.querySelector('code');
         const mdContainer = document.getElementById('file-markdown');
 
-        console.log('Opening file:', path, 'extension:', data.extension);
+        console.log('Opening file:', path, 'extension:', data.extension, 'marked available:', typeof marked !== 'undefined');
 
         // Render markdown files with marked.js
         if (data.extension === 'md' || data.extension === 'markdown') {
             preEl.style.display = 'none';
-            mdContainer.innerHTML = marked.parse(data.content);
+            if (typeof marked !== 'undefined') {
+                mdContainer.innerHTML = marked.parse(data.content);
+            } else {
+                // Fallback: basic markdown rendering
+                let html = data.content
+                    .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
+                    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+                    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+                    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+                    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+                    .replace(/^- (.+)$/gm, '<li>$1</li>')
+                    .replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>')
+                    .replace(/\n\n/g, '</p><p>')
+                    .replace(/\n/g, '<br>');
+                mdContainer.innerHTML = '<p>' + html + '</p>';
+            }
             mdContainer.style.display = 'block';
         } else {
             // Show as code
