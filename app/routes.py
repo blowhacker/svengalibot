@@ -1185,6 +1185,9 @@ def _load_guide_direct(project, guide_path) -> dict:
 
 def _run_worker_turn(project, task: CollaborationTask, guide: dict, orchestrator) -> dict:
     """Run a single worker turn using Claude."""
+    import logging
+    logger = logging.getLogger(__name__)
+
     from app.worker import Worker
 
     # Get recent context from conversation
@@ -1207,11 +1210,14 @@ def _run_worker_turn(project, task: CollaborationTask, guide: dict, orchestrator
             previous_feedback = msg.content
             break
 
+    logger.info(f"Starting worker for task {task.id}, iteration {task.iteration}")
+
     worker = Worker(project.path)
     output_buffer = []
 
     def on_output(line: str):
         output_buffer.append(line)
+        logger.debug(f"Worker output: {line[:100]}...")
         _broadcast_collab_event(project.name, task.id, {
             "type": "chunk_output",
             "data": {"content": line},
@@ -1230,6 +1236,8 @@ def _run_worker_turn(project, task: CollaborationTask, guide: dict, orchestrator
         on_output=on_output,
         baseline_commit="",
     )
+
+    logger.info(f"Worker finished. Success: {result.success}, Output lines: {len(output_buffer)}, Summary: {result.summary[:100] if result.summary else 'None'}...")
 
     return {
         "success": result.success,
