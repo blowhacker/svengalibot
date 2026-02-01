@@ -1334,7 +1334,8 @@ textarea:focus {
     border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    overflow-y: auto;
+    /* Sidebar scrolls as one unit if content overflows */
 }
 
 .chat-sidebar .sidebar-header {
@@ -1365,9 +1366,8 @@ textarea:focus {
 }
 
 .file-tree-mini {
-    max-height: 200px;
-    overflow-y: auto;
     font-size: 0.75rem;
+    /* No internal scroll - sidebar scrolls as unit if needed */
 }
 
 .file-tree-mini .file-item {
@@ -1427,8 +1427,10 @@ textarea:focus {
     font-size: 0.85rem;
     color: var(--text);
     white-space: pre-wrap;
-    max-height: 80px;
-    overflow-y: auto;
+    /* No internal scroll - truncate if too long */
+    max-height: 60px;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* Chat messages */
