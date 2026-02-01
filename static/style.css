@@ -1169,15 +1169,22 @@ textarea:focus {
 .file-viewer-content {
     margin: 0;
     padding: 1rem;
-    max-height: 400px;
+    max-height: 50vh;
     overflow: auto;
-    font-family: 'Fira Code', 'Monaco', monospace;
+    font-family: 'Fira Code', 'Monaco', 'Consolas', monospace;
     font-size: 0.8rem;
-    line-height: 1.5;
-    background: #0d1117;
+    line-height: 1.6;
+    background: #0d1117 !important;
     color: #c9d1d9;
     white-space: pre;
     tab-size: 4;
+    border-radius: 0;
+}
+
+/* Override highlight.js background */
+.file-viewer-content.hljs {
+    background: #0d1117 !important;
+    padding: 1rem;
 }
 
 /* Responsive: stack on narrow screens */

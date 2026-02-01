@@ -229,6 +229,7 @@ async function openFile(path) {
     viewer.style.display = 'block';
     pathEl.textContent = path;
     contentEl.textContent = 'Loading...';
+    contentEl.className = 'file-viewer-content';
 
     // Highlight selected file
     document.querySelectorAll('.tree-file').forEach(el => el.classList.remove('selected'));
@@ -241,9 +242,41 @@ async function openFile(path) {
         if (data.error) {
             contentEl.textContent = `Error: ${data.error}`;
         } else {
+            // Map extensions to highlight.js language names
+            const langMap = {
+                'py': 'python',
+                'js': 'javascript',
+                'ts': 'typescript',
+                'jsx': 'javascript',
+                'tsx': 'typescript',
+                'html': 'html',
+                'css': 'css',
+                'json': 'json',
+                'yaml': 'yaml',
+                'yml': 'yaml',
+                'md': 'markdown',
+                'sh': 'bash',
+                'bash': 'bash',
+                'sql': 'sql',
+                'xml': 'xml',
+                'go': 'go',
+                'rs': 'rust',
+                'rb': 'ruby',
+                'java': 'java',
+                'c': 'c',
+                'cpp': 'cpp',
+                'h': 'c',
+                'hpp': 'cpp',
+            };
+
+            const lang = langMap[data.extension] || 'plaintext';
+            contentEl.className = `file-viewer-content language-${lang}`;
             contentEl.textContent = data.content;
-            // Apply syntax highlighting class based on extension
-            contentEl.className = `file-viewer-content language-${data.extension || 'text'}`;
+
+            // Apply syntax highlighting
+            if (typeof hljs !== 'undefined') {
+                hljs.highlightElement(contentEl);
+            }
         }
     } catch (e) {
         contentEl.textContent = `Error loading file: ${e.message}`;
