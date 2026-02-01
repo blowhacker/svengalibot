@@ -843,6 +843,9 @@ _collab_tasks_lock = threading.Lock()
 
 def _get_collab_task(project_name: str, task_id: str) -> CollaborationTask:
     """Get a collaboration task from memory or disk."""
+    import logging
+    logger = logging.getLogger(__name__)
+
     with _collab_tasks_lock:
         if project_name in _collab_tasks and task_id in _collab_tasks[project_name]:
             return _collab_tasks[project_name][task_id]
@@ -851,9 +854,12 @@ def _get_collab_task(project_name: str, task_id: str) -> CollaborationTask:
     pm = get_project_manager()
     project = pm.get_project(project_name)
     if not project:
+        logger.warning(f"Project not found: {project_name}")
         return None
 
     task_file = project.path / ".svengali" / "chats" / f"{task_id}.json"
+    logger.info(f"Looking for task file: {task_file}")
+
     if task_file.exists():
         try:
             data = json.loads(task_file.read_text())
@@ -861,8 +867,12 @@ def _get_collab_task(project_name: str, task_id: str) -> CollaborationTask:
             with _collab_tasks_lock:
                 _collab_tasks.setdefault(project_name, {})[task_id] = task
             return task
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to load task {task_id}: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        logger.warning(f"Task file does not exist: {task_file}")
 
     return None
 
@@ -954,6 +964,17 @@ def create_collab_task(project_name):
     )
 
     _save_collab_task(project_name, task)
+
+    # Verify task is retrievable before returning
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"Created task {task_id} for project {project_name}")
+
+    # Double-check task is in memory cache
+    with _collab_tasks_lock:
+        if project_name not in _collab_tasks or task_id not in _collab_tasks[project_name]:
+            logger.error(f"Task {task_id} not in memory cache after save!")
+            _collab_tasks.setdefault(project_name, {})[task_id] = task
 
     # Get necessary objects before starting thread (within app context)
     app = current_app._get_current_object()
