@@ -311,16 +311,21 @@ def cancel_task(project_name, task_id):
 @main_bp.route("/project/<project_name>/task/<task_id>/approve", methods=["POST"])
 def approve_chunk(project_name, task_id):
     """Manually approve current chunk."""
+    from app.state import ChunkStatus
+
     data = request.get_json() or {}
     chunk_id = data.get("chunk_id")
 
     if not chunk_id:
-        # Get current chunk
+        # Find the chunk that needs approval (rejected, review, or in_progress)
         state = get_state_manager_for_project(project_name)
         if state:
             task = state.get_task(task_id)
-            if task and task.current_chunk:
-                chunk_id = task.current_chunk
+            if task:
+                for chunk in task.chunks:
+                    if chunk.status in (ChunkStatus.REJECTED, ChunkStatus.REVIEW, ChunkStatus.IN_PROGRESS):
+                        chunk_id = chunk.id
+                        break
 
     if chunk_id:
         orchestrator = get_orchestrator()
@@ -333,16 +338,21 @@ def approve_chunk(project_name, task_id):
 @main_bp.route("/project/<project_name>/task/<task_id>/retry", methods=["POST"])
 def retry_chunk(project_name, task_id):
     """Retry a failed/rejected chunk."""
+    from app.state import ChunkStatus
+
     data = request.get_json() or {}
     chunk_id = data.get("chunk_id")
 
     if not chunk_id:
-        # Get current chunk
+        # Find the chunk that needs retry (rejected, failed, or in_progress)
         state = get_state_manager_for_project(project_name)
         if state:
             task = state.get_task(task_id)
-            if task and task.current_chunk:
-                chunk_id = task.current_chunk
+            if task:
+                for chunk in task.chunks:
+                    if chunk.status in (ChunkStatus.REJECTED, ChunkStatus.FAILED, ChunkStatus.IN_PROGRESS):
+                        chunk_id = chunk.id
+                        break
 
     if chunk_id:
         orchestrator = get_orchestrator()

@@ -337,6 +337,9 @@ class Orchestrator:
             if not attempt:
                 return False
 
+            # Track current chunk for retry/approve lookups
+            state.update_task(task_id, current_chunk=chunk_id)
+
             self._emit(Event(
                 type=EventType.CHUNK_STARTED,
                 task_id=task_id,
