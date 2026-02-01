@@ -65,7 +65,7 @@ let currentTask = null;
 
 // Load task and connect to stream
 async function loadTask() {
-    const response = await fetch(`/project/${projectName}/task/${taskId}/json`);
+    const response = await fetch(`/project/${projectName}/chat/${taskId}/json`);
     if (!response.ok) {
         alert('Task not found');
         window.location.href = `/project/${projectName}`;
@@ -191,7 +191,7 @@ function formatContent(content, role) {
 
 // SSE Connection
 function connectStream() {
-    const evtSource = new EventSource(`/project/${projectName}/task/${taskId}/stream`);
+    const evtSource = new EventSource(`/project/${projectName}/chat/${taskId}/stream`);
 
     evtSource.onmessage = (event) => {
         try {
@@ -327,18 +327,18 @@ function updateIterationCount() {
 
 // Controls
 document.getElementById('btn-pause').addEventListener('click', async () => {
-    await fetch(`/project/${projectName}/task/${taskId}/pause`, { method: 'POST' });
+    await fetch(`/project/${projectName}/chat/${taskId}/pause`, { method: 'POST' });
     loadTask();
 });
 
 document.getElementById('btn-resume').addEventListener('click', async () => {
-    await fetch(`/project/${projectName}/task/${taskId}/resume`, { method: 'POST' });
+    await fetch(`/project/${projectName}/chat/${taskId}/resume`, { method: 'POST' });
     loadTask();
 });
 
 document.getElementById('btn-stop').addEventListener('click', async () => {
     if (confirm('Stop this task?')) {
-        await fetch(`/project/${projectName}/task/${taskId}/cancel`, { method: 'POST' });
+        await fetch(`/project/${projectName}/chat/${taskId}/cancel`, { method: 'POST' });
         loadTask();
     }
 });
