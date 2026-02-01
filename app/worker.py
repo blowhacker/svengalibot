@@ -105,6 +105,7 @@ class Worker:
             logger.info(f"Using baseline commit for diff: {baseline_commit[:8] if baseline_commit else 'none'}")
 
             # Run Claude CLI with prompt via stdin
+            logger.info(f"Starting Claude CLI subprocess: {' '.join(cmd)}")
             process = subprocess.Popen(
                 cmd,
                 cwd=self.workspace_dir,
@@ -116,17 +117,20 @@ class Worker:
             )
 
             # Send prompt to stdin
+            logger.info("Sending prompt to Claude CLI stdin...")
             process.stdin.write(prompt)
             process.stdin.close()
+            logger.info("Prompt sent, stdin closed. Reading output...")
 
             output_lines = []
             for line in iter(process.stdout.readline, ""):
                 output_lines.append(line)
-                logger.debug(f"Claude output: {line.rstrip()}")
+                logger.info(f"Claude: {line.rstrip()[:200]}")
                 if on_output:
                     on_output(line)
 
-            process.wait()
+            logger.info(f"Output loop finished, waiting for process...")
+            process.wait(timeout=600)  # 10 minute timeout
             output = "".join(output_lines)
             logger.info(f"Claude CLI exited with code {process.returncode}")
 
