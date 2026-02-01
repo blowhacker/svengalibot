@@ -371,7 +371,23 @@ class Orchestrator:
             "acceptance_criteria": chunk.acceptance_criteria,
         }
 
-        for iteration in range(flow.max_iterations):
+        # Resume from saved iteration/step if chunk was interrupted
+        start_iteration = chunk.current_iteration or 0
+        start_step = chunk.current_step or 0
+
+        if start_iteration > 0 or start_step > 0:
+            logger.info(f"Resuming chunk {chunk_id} from iteration {start_iteration}, step {start_step}")
+            self._emit(Event(
+                type=EventType.CHUNK_OUTPUT,
+                task_id=task_id,
+                chunk_id=chunk_id,
+                data={
+                    "project": project.name,
+                    "content": f"\n[Resuming from iteration {start_iteration + 1}, step {start_step + 1}]\n",
+                },
+            ))
+
+        for iteration in range(start_iteration, flow.max_iterations):
             if self._should_stop(task_key):
                 return False
 
@@ -389,7 +405,14 @@ class Orchestrator:
                 },
             ))
 
+            # Determine starting step (only for first iteration when resuming)
+            iter_start_step = start_step if iteration == start_iteration else 0
+
             for step_idx, step in enumerate(flow.steps):
+                # Skip steps we've already completed when resuming
+                if step_idx < iter_start_step:
+                    continue
+
                 if self._should_stop(task_key):
                     return False
 
@@ -946,8 +969,11 @@ class Orchestrator:
         state = self.project_manager.get_state_manager(project)
         chunk = state.get_chunk(task_id, chunk_id)
         if chunk:
-            # Reset chunk to pending (keeps attempt history for reference)
-            state.update_chunk(task_id, chunk_id, status=ChunkStatus.PENDING)
+            # Reset chunk to pending and clear iteration/step (keeps attempt history for reference)
+            state.update_chunk(task_id, chunk_id,
+                               status=ChunkStatus.PENDING,
+                               current_iteration=0,
+                               current_step=0)
             self._emit(Event(
                 type=EventType.CHUNK_STARTED,
                 task_id=task_id,

@@ -787,13 +787,22 @@ class StateManager:
         return None
 
     def get_next_chunk(self, task_id: str) -> Optional[Chunk]:
-        """Get the next chunk to process."""
+        """Get the next chunk to process.
+
+        Returns IN_PROGRESS chunks first (for resume), then PENDING chunks.
+        """
         task = self.get_task(task_id)
         if not task:
             return None
 
         approved_ids = {c.id for c in task.chunks if c.status == ChunkStatus.APPROVED}
 
+        # First, check for any IN_PROGRESS chunk that needs to be resumed
+        for chunk in task.chunks:
+            if chunk.status == ChunkStatus.IN_PROGRESS:
+                return chunk
+
+        # Then look for PENDING chunks
         for chunk in task.chunks:
             if chunk.status == ChunkStatus.PENDING:
                 # Check if dependencies are met
