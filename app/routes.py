@@ -1250,20 +1250,38 @@ def _run_worker_turn(project, task: CollaborationTask, guide: dict, orchestrator
 
 def _run_reviewer_turn(project, task: CollaborationTask, worker_output: dict, guide: dict, orchestrator) -> dict:
     """Run a single reviewer turn using OpenAI."""
+    import logging
+    logger = logging.getLogger(__name__)
+
     chunk_spec = {
         "title": f"Iteration {task.iteration}",
         "description": task.prompt,
         "acceptance_criteria": ["Complete the requested work", "Address any previous feedback"],
     }
 
-    review, usage = orchestrator.manager.review_chunk(
-        chunk_spec,
-        worker_output.get("diff", ""),
-        worker_output.get("summary", ""),
-        guide,
-    )
+    logger.info(f"Starting reviewer for task {task.id}, iteration {task.iteration}")
+    logger.info(f"Worker summary: {worker_output.get('summary', '')[:200]}...")
+    logger.info(f"Worker diff length: {len(worker_output.get('diff', ''))} chars")
 
-    return review
+    try:
+        review, usage = orchestrator.manager.review_chunk(
+            chunk_spec,
+            worker_output.get("diff", ""),
+            worker_output.get("summary", ""),
+            guide,
+        )
+        logger.info(f"Reviewer response: decision={review.get('decision')}, summary={review.get('summary', '')[:100]}...")
+        return review
+    except Exception as e:
+        logger.error(f"Reviewer failed: {e}")
+        import traceback
+        traceback.print_exc()
+        # Return a rejection so we don't silently fail
+        return {
+            "decision": "rejected",
+            "summary": f"Review failed: {e}",
+            "feedback_for_retry": f"Review error: {e}",
+        }
 
 
 # Paused collaboration tasks
