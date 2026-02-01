@@ -1190,24 +1190,43 @@ def _run_worker_turn(project, task: CollaborationTask, guide: dict, orchestrator
 
     from app.worker import Worker
 
-    # Get recent context from conversation
-    recent_messages = task.messages[-5:] if task.messages else []
-    context = "\n".join([
-        f"[{m.role}]: {m.content[:500]}" for m in recent_messages
-    ])
+    # Build full conversation context for Claude
+    conversation_parts = []
+    for msg in task.messages:
+        if msg.role == "system":
+            continue  # Skip system messages
+        provider = "OpenAI" if msg.provider == "openai" or msg.role == "reviewer" else "You (Claude)"
+        conversation_parts.append(f"**{provider}:**\n{msg.content}")
 
-    # Build task spec from prompt
+    context = "\n\n".join(conversation_parts) if conversation_parts else ""
+
+    # Build task spec - include that this is a collaboration
     chunk_spec = {
-        "title": f"Iteration {task.iteration}",
-        "description": task.prompt,
-        "acceptance_criteria": ["Complete the requested work", "Address any previous feedback"],
+        "title": f"Collaboration - Iteration {task.iteration}",
+        "description": f"""You are Claude, collaborating with OpenAI on the following goal:
+
+{task.prompt}
+
+This is iteration {task.iteration} of {task.max_iterations}.
+
+Based on the conversation below, continue your part of the collaboration. If OpenAI has provided feedback or critique, you should either:
+- Accept valid points and make improvements
+- Debate points you disagree with, explaining your reasoning
+- Continue building on the work
+
+Be substantive and make real progress each iteration.""",
+        "acceptance_criteria": [
+            "Make meaningful progress toward the collaboration goal",
+            "Respond thoughtfully to any feedback from OpenAI",
+            "Create or update files as needed for the task",
+        ],
     }
 
-    # Get previous feedback if any
+    # Get previous feedback if any (most recent OpenAI response)
     previous_feedback = ""
     for msg in reversed(task.messages):
-        if msg.role == "reviewer":
-            previous_feedback = msg.content
+        if msg.role == "reviewer" or msg.provider == "openai":
+            previous_feedback = f"OpenAI's latest response:\n{msg.content}"
             break
 
     logger.info(f"Starting worker for task {task.id}, iteration {task.iteration}")
@@ -1249,38 +1268,72 @@ def _run_worker_turn(project, task: CollaborationTask, guide: dict, orchestrator
 
 
 def _run_reviewer_turn(project, task: CollaborationTask, worker_output: dict, guide: dict, orchestrator) -> dict:
-    """Run a single reviewer turn using OpenAI."""
+    """Run a single reviewer turn using OpenAI.
+
+    Uses the flexible collaborate() method for general collaboration,
+    passing the full conversation history for real back-and-forth.
+    """
     import logging
     logger = logging.getLogger(__name__)
 
-    chunk_spec = {
-        "title": f"Iteration {task.iteration}",
-        "description": task.prompt,
-        "acceptance_criteria": ["Complete the requested work", "Address any previous feedback"],
-    }
-
     logger.info(f"Starting reviewer for task {task.id}, iteration {task.iteration}")
-    logger.info(f"Worker summary: {worker_output.get('summary', '')[:200]}...")
-    logger.info(f"Worker diff length: {len(worker_output.get('diff', ''))} chars")
+    logger.info(f"Worker output length: {len(worker_output.get('output', ''))} chars")
+
+    # Build conversation history from task messages
+    conversation_history = [
+        {
+            "role": msg.role,
+            "content": msg.content,
+            "provider": msg.provider,
+        }
+        for msg in task.messages
+    ]
+
+    # Add the latest worker output if not already in messages
+    if worker_output.get("summary") or worker_output.get("output"):
+        latest_content = worker_output.get("summary") or worker_output.get("output", "")[:2000]
+        conversation_history.append({
+            "role": "worker",
+            "content": latest_content,
+            "provider": "claude",
+        })
 
     try:
-        review, usage = orchestrator.manager.review_chunk(
-            chunk_spec,
-            worker_output.get("diff", ""),
-            worker_output.get("summary", ""),
-            guide,
+        result, usage = orchestrator.manager.collaborate(
+            collaboration_prompt=task.prompt,
+            conversation_history=conversation_history,
+            iteration=task.iteration,
+            max_iterations=task.max_iterations,
         )
-        logger.info(f"Reviewer response: decision={review.get('decision')}, summary={review.get('summary', '')[:100]}...")
-        return review
+
+        logger.info(f"Reviewer response: consensus={result.get('consensus_reached')}, response_length={len(result.get('response', ''))}")
+
+        # Map the collaborate response to the expected format
+        # If consensus reached, treat as approved
+        if result.get("consensus_reached"):
+            return {
+                "decision": "approved",
+                "approved": True,
+                "notes": result.get("response", ""),
+                "summary": result.get("reasoning", "Consensus reached"),
+            }
+        else:
+            return {
+                "decision": "continue",
+                "approved": False,
+                "feedback_for_retry": result.get("response", ""),
+                "summary": result.get("reasoning", "More iteration needed"),
+            }
+
     except Exception as e:
         logger.error(f"Reviewer failed: {e}")
         import traceback
         traceback.print_exc()
-        # Return a rejection so we don't silently fail
         return {
-            "decision": "rejected",
-            "summary": f"Review failed: {e}",
-            "feedback_for_retry": f"Review error: {e}",
+            "decision": "continue",
+            "approved": False,
+            "summary": f"Review error: {e}",
+            "feedback_for_retry": f"Review encountered an error: {e}. Please continue.",
         }
 
 

@@ -475,6 +475,92 @@ Be extremely specific and actionable. The next attempt MUST succeed."""
             lines.append("")
         return "\n".join(lines)
 
+    def collaborate(
+        self,
+        collaboration_prompt: str,
+        conversation_history: list[dict],
+        iteration: int,
+        max_iterations: int,
+    ) -> tuple[dict, dict]:
+        """Respond to a collaboration turn based on the collaboration goal.
+
+        This is for general-purpose collaboration (debates, brainstorming, review, etc.)
+        NOT just code review. The response is freeform based on the collaboration prompt.
+
+        Args:
+            collaboration_prompt: The user's description of how agents should collaborate
+            conversation_history: List of {role, content, provider} messages
+            iteration: Current iteration number
+            max_iterations: Maximum iterations allowed
+
+        Returns:
+            Tuple of (response_dict, usage_info)
+            response_dict contains:
+                - response: The actual response text
+                - consensus_reached: bool - whether to stop iterating
+                - reasoning: Why consensus was/wasn't reached
+        """
+        # Format conversation history
+        history_text = ""
+        for msg in conversation_history:
+            role = msg.get("role", "unknown")
+            provider = msg.get("provider", role)
+            content = msg.get("content", "")
+
+            if provider == "claude" or role == "worker":
+                history_text += f"\n**Claude:**\n{content}\n"
+            elif provider == "openai" or role == "reviewer":
+                history_text += f"\n**OpenAI (You previously):**\n{content}\n"
+            elif role == "system":
+                history_text += f"\n*[System: {content}]*\n"
+
+        prompt = f"""You are OpenAI, participating in a collaboration with Claude (Anthropic's AI).
+
+## Collaboration Goal
+{collaboration_prompt}
+
+## Current State
+- Iteration: {iteration} of {max_iterations}
+- Your role: Provide independent critique, feedback, or responses as described in the collaboration goal
+
+## Conversation So Far
+{history_text if history_text else "(This is the start of the collaboration)"}
+
+## Your Task
+Based on the collaboration goal above, respond to Claude's latest contribution. Be:
+- **Independent**: Give your genuine perspective, not just agreement
+- **Critical**: Challenge assumptions, find weaknesses, push for improvement
+- **Constructive**: Offer specific suggestions, not just criticism
+- **Direct**: State your position clearly
+
+At the end, assess whether consensus has been reached or if more iteration is needed.
+
+Respond in JSON format:
+```json
+{{
+    "response": "Your detailed response to Claude...",
+    "consensus_reached": false,
+    "reasoning": "Why consensus was or wasn't reached"
+}}
+```
+
+If the collaboration goal has been achieved or you've reached genuine agreement, set consensus_reached to true."""
+
+        messages = [{"role": "user", "content": prompt}]
+        response_text, usage = self._call_api(messages)
+
+        try:
+            result = self._extract_json(response_text)
+        except ValueError:
+            # If JSON extraction fails, treat the whole response as the response text
+            result = {
+                "response": response_text,
+                "consensus_reached": False,
+                "reasoning": "Could not parse structured response"
+            }
+
+        return result, usage
+
     def decide_research_needed(self, plan: dict, chunk: dict) -> list[str]:
         """Decide what research is needed for a chunk."""
         # Check if plan already identified research needs
