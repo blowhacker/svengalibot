@@ -92,6 +92,7 @@ class Worker:
 
         # Build command - use -p for print mode with prompt via stdin
         # --dangerously-skip-permissions allows file writes without prompting
+        # WARNING: This should only run in isolated VM environments for safety
         cmd = ["claude", "-p", "--dangerously-skip-permissions"]
 
         logger.info(f"Executing Claude CLI in {self.workspace_dir}")
@@ -104,23 +105,22 @@ class Worker:
                 baseline_commit = self._get_current_commit()
             logger.info(f"Using baseline commit for diff: {baseline_commit[:8] if baseline_commit else 'none'}")
 
-            # Run Claude CLI with prompt via stdin
-            logger.info(f"Starting Claude CLI subprocess: {' '.join(cmd)}")
+            # Pass prompt directly as argument (not via stdin)
+            # Using --print flag for non-interactive mode
+            cmd = ["claude", "--dangerously-skip-permissions", "-p", prompt]
+            logger.info(f"Starting Claude CLI in {self.workspace_dir}")
+            logger.info(f"Prompt length: {len(prompt)} chars")
+
             process = subprocess.Popen(
                 cmd,
                 cwd=self.workspace_dir,
-                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
             )
 
-            # Send prompt to stdin
-            logger.info("Sending prompt to Claude CLI stdin...")
-            process.stdin.write(prompt)
-            process.stdin.close()
-            logger.info("Prompt sent, stdin closed. Reading output...")
+            logger.info("Reading Claude output...")
 
             output_lines = []
             for line in iter(process.stdout.readline, ""):
