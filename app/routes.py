@@ -206,6 +206,75 @@ def delete_project(project_name):
     return jsonify({"error": "Project not found"}), 404
 
 
+@main_bp.route("/project/<project_name>/flow", methods=["PUT"])
+def update_project_flow(project_name):
+    """Update default flow for a project."""
+    from app.state import FlowDefinition, FlowStep
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Flow data required"}), 400
+
+    pm = get_project_manager()
+    project = pm.get_project(project_name)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+
+    # Allow clearing the flow by passing null/None
+    if data.get("clear"):
+        pm.update_project(project_name, default_flow=None)
+        return jsonify({"status": "cleared"})
+
+    # Validate flow structure
+    errors = []
+
+    max_iterations = data.get("max_iterations", 4)
+    if not isinstance(max_iterations, int) or max_iterations < 1 or max_iterations > 20:
+        errors.append("max_iterations must be an integer between 1 and 20")
+
+    steps = data.get("steps", [])
+    if not steps:
+        errors.append("At least one step is required")
+
+    valid_types = {"worker", "manager", "human"}
+    valid_actions = {
+        "worker": {"execute", "write", "revise"},
+        "manager": {"review", "feedback", "approve"},
+        "human": {"review", "approve"},
+    }
+
+    for i, step in enumerate(steps):
+        step_type = step.get("type")
+        step_action = step.get("action")
+
+        if step_type not in valid_types:
+            errors.append(f"Step {i+1}: Invalid type '{step_type}'")
+        elif step_action not in valid_actions.get(step_type, set()):
+            errors.append(f"Step {i+1}: Invalid action '{step_action}' for type '{step_type}'")
+
+    if errors:
+        return jsonify({"error": "Validation failed", "details": errors}), 400
+
+    # Build FlowDefinition
+    flow = FlowDefinition(
+        max_iterations=max_iterations,
+        stop_on_approval=data.get("stop_on_approval", True),
+        steps=[
+            FlowStep(
+                type=s.get("type"),
+                action=s.get("action"),
+                optional=s.get("optional", False),
+                config=s.get("config", {}),
+            )
+            for s in steps
+        ],
+    )
+
+    pm.update_project(project_name, default_flow=flow)
+
+    return jsonify({"status": "updated", "flow": flow.to_dict()})
+
+
 # Task CRUD
 @main_bp.route("/project/<project_name>/task", methods=["POST"])
 def create_task(project_name):

@@ -343,6 +343,7 @@ class Project:
     path: Path
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     description: str = ""
+    default_flow: Optional[FlowDefinition] = None  # Default flow for new tasks
 
     def to_dict(self):
         return {
@@ -350,12 +351,18 @@ class Project:
             "path": str(self.path),
             "created_at": self.created_at,
             "description": self.description,
+            "default_flow": self.default_flow.to_dict() if self.default_flow else None,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "Project":
         data = data.copy()
         data["path"] = Path(data["path"])
+        # Backwards compatibility: default_flow may not exist
+        if "default_flow" in data and data["default_flow"]:
+            data["default_flow"] = FlowDefinition.from_dict(data["default_flow"])
+        else:
+            data["default_flow"] = None
         return cls(**data)
 
     @property
@@ -492,6 +499,23 @@ class ProjectManager:
                 shutil.rmtree(svengali_dir)
         return True
 
+    def update_project(self, name: str, **updates) -> Optional[Project]:
+        """Update project settings."""
+        project = self.get_project(name)
+        if not project:
+            return None
+
+        for key, value in updates.items():
+            if hasattr(project, key):
+                setattr(project, key, value)
+
+        # Save updated project metadata
+        meta_path = project.svengali_dir / "project.json"
+        with open(meta_path, "w") as f:
+            json.dump(project.to_dict(), f, indent=2)
+
+        return project
+
     def get_state_manager(self, project: Project) -> "StateManager":
         """Get a StateManager scoped to this project."""
         return StateManager(project.tasks_dir)
@@ -513,10 +537,10 @@ class StateManager:
     def _chunks_dir(self, task_id: str) -> Path:
         return self._task_dir(task_id) / "chunks"
 
-    def create_task(self, description: str) -> Task:
-        """Create a new task."""
+    def create_task(self, description: str, flow: Optional[FlowDefinition] = None) -> Task:
+        """Create a new task with optional flow definition."""
         task_id = f"task_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-        task = Task(id=task_id, description=description)
+        task = Task(id=task_id, description=description, flow=flow)
 
         # Create directory structure
         task_dir = self._task_dir(task_id)

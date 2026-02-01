@@ -1030,6 +1030,28 @@ textarea:focus {
     cursor: help;
 }
 
+/* Project Flow Section */
+.project-flow {
+    margin-bottom: 1.5rem;
+}
+
+.flow-display {
+    padding: 0.75rem;
+    background: var(--bg-secondary);
+    border-radius: 6px;
+}
+
+.flow-badge-large {
+    display: inline-block;
+    padding: 0.4rem 0.8rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.9rem;
+    color: var(--text);
+    font-family: 'Fira Code', monospace;
+}
+
 /* ============================================
    Project Layout with File Explorer
    ============================================ */

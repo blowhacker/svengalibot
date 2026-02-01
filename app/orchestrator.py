@@ -138,7 +138,8 @@ class Orchestrator:
     def start_task(self, project: Project, description: str) -> Task:
         """Start a new task within a project."""
         state = self.project_manager.get_state_manager(project)
-        task = state.create_task(description)
+        # Inherit project's default flow if set
+        task = state.create_task(description, flow=project.default_flow)
 
         self._emit(Event(
             type=EventType.TASK_CREATED,
