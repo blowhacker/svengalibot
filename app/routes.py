@@ -1332,9 +1332,19 @@ def _run_reviewer_turn(project, task: CollaborationTask, worker_output: dict, gu
         for msg in task.messages
     ]
 
-    # Add the latest worker output if not already in messages
-    if worker_output.get("summary") or worker_output.get("output"):
-        latest_content = worker_output.get("summary") or worker_output.get("output", "")[:2000]
+    # Add the latest worker output WITH the actual file contents (diff)
+    # This is critical - OpenAI needs to see what Claude actually wrote, not just a summary
+    if worker_output.get("summary") or worker_output.get("output") or worker_output.get("diff"):
+        latest_content = worker_output.get("summary") or worker_output.get("output", "")
+
+        # Include the actual diff so OpenAI can see file contents
+        diff = worker_output.get("diff", "")
+        if diff:
+            # Truncate if very long, but include substantial content
+            if len(diff) > 15000:
+                diff = diff[:15000] + "\n\n... (truncated, showing first 15000 chars)"
+            latest_content += f"\n\n**Files created/modified (diff):**\n```\n{diff}\n```"
+
         conversation_history.append({
             "role": "worker",
             "content": latest_content,
