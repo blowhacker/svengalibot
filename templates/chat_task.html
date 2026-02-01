@@ -65,6 +65,7 @@
         </div>
         <div class="modal-body">
             <pre id="file-content"><code></code></pre>
+            <div id="file-markdown" class="markdown-body file-markdown-view" style="display:none"></div>
         </div>
     </div>
 </div>
@@ -503,24 +504,18 @@ async function openFile(path) {
         document.getElementById('file-modal-title').textContent = path;
         const preEl = document.getElementById('file-content');
         const codeEl = preEl.querySelector('code');
+        const mdContainer = document.getElementById('file-markdown');
+
+        console.log('Opening file:', path, 'extension:', data.extension);
 
         // Render markdown files with marked.js
         if (data.extension === 'md' || data.extension === 'markdown') {
             preEl.style.display = 'none';
-            // Create or get markdown container
-            let mdContainer = document.getElementById('file-markdown');
-            if (!mdContainer) {
-                mdContainer = document.createElement('div');
-                mdContainer.id = 'file-markdown';
-                mdContainer.className = 'markdown-body file-markdown-view';
-                preEl.parentNode.insertBefore(mdContainer, preEl.nextSibling);
-            }
             mdContainer.innerHTML = marked.parse(data.content);
             mdContainer.style.display = 'block';
         } else {
             // Show as code
-            let mdContainer = document.getElementById('file-markdown');
-            if (mdContainer) mdContainer.style.display = 'none';
+            mdContainer.style.display = 'none';
             preEl.style.display = 'block';
 
             codeEl.textContent = data.content;
