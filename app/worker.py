@@ -191,6 +191,18 @@ class Worker:
         import os
         claude_config_dir = Path.home() / ".claude"
 
+        # Refresh OAuth token on host before Docker run
+        # This ensures the copied credentials are fresh
+        try:
+            logger.info("Refreshing OAuth token on host...")
+            subprocess.run(
+                ["claude", "--version"],
+                capture_output=True,
+                timeout=30,
+            )
+        except Exception as e:
+            logger.warning(f"Token refresh failed (continuing anyway): {e}")
+
         # Build docker run command
         # Mount host's .claude to /host-claude, then copy auth files while preserving container's MCP config
         setup_script = (
