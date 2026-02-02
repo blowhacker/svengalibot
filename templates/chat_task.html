@@ -267,8 +267,8 @@ function getProviderIcon(provider) {
 }
 
 function getProviderLabel(provider, role) {
-    if (provider === 'claude' || role === 'worker') return 'Claude (Worker)';
-    if (provider === 'openai' || role === 'reviewer') return 'OpenAI (Reviewer)';
+    if (provider === 'claude' || role === 'worker') return 'Claude';
+    if (provider === 'openai' || role === 'reviewer') return 'OpenAI';
     if (provider === 'user' || role === 'user') return 'You';
     return 'System';
 }
@@ -399,7 +399,7 @@ function handleStreamEvent(data) {
             appendMessage({
                 role: 'system',
                 provider: 'system',
-                content: '🔍 OpenAI is reviewing...',
+                content: '🔍 OpenAI is thinking...',
                 timestamp: new Date().toISOString(),
             });
             break;
