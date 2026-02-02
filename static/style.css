@@ -1321,11 +1321,11 @@ textarea:focus {
     font-weight: 500;
 }
 
-/* Chat layout */
+/* Chat layout - page scroll, not nested */
 .chat-layout {
     display: grid;
     grid-template-columns: 220px 1fr;
-    height: calc(100vh - 60px);
+    min-height: calc(100vh - 60px);
     gap: 0;
 }
 
@@ -1334,8 +1334,10 @@ textarea:focus {
     border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
+    position: sticky;
+    top: 60px; /* header height */
+    height: calc(100vh - 60px);
     overflow-y: auto;
-    /* Sidebar scrolls as one unit if content overflows */
 }
 
 .chat-sidebar .sidebar-header {
@@ -1399,11 +1401,11 @@ textarea:focus {
     width: 100%;
 }
 
-/* Chat main area */
+/* Chat main area - no nested scroll */
 .chat-main {
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    min-height: 0;
 }
 
 .chat-header {
@@ -1433,10 +1435,9 @@ textarea:focus {
     text-overflow: ellipsis;
 }
 
-/* Chat messages */
+/* Chat messages - grows naturally, page scrolls */
 .chat-messages {
     flex: 1;
-    overflow-y: auto;
     padding: 1rem;
     display: flex;
     flex-direction: column;
@@ -1559,12 +1560,15 @@ textarea:focus {
 @media (max-width: 768px) {
     .chat-layout {
         grid-template-columns: 1fr;
-        grid-template-rows: auto 1fr;
     }
 
     .chat-sidebar {
-        max-height: 150px;
+        position: static;
+        height: auto;
+        max-height: 200px;
         overflow-y: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
     }
 
     .chat-message {

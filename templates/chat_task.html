@@ -172,7 +172,8 @@ function appendMessage(msg) {
     displayedMessageIds.add(msgId);
 
     container.insertAdjacentHTML('beforeend', renderMessage(msg));
-    container.scrollTop = container.scrollHeight;
+    // Scroll page to bottom
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
 
     // Clear streaming reference if this is a complete message
     streamingMessageEl = null;
@@ -189,7 +190,7 @@ function startStreamingMessage(role, provider) {
 
     container.insertAdjacentHTML('beforeend', renderMessage(msg));
     streamingMessageEl = container.querySelector('.chat-message:last-child .message-content');
-    container.scrollTop = container.scrollHeight;
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
 
     return streamingMessageEl;
 }
@@ -198,8 +199,7 @@ function appendToStreamingMessage(content) {
     if (streamingMessageEl) {
         // Append raw text, we'll format when complete
         streamingMessageEl.textContent += content;
-        const container = document.getElementById('chat-messages');
-        container.scrollTop = container.scrollHeight;
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
     }
 }
 
