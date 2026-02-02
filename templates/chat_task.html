@@ -80,6 +80,8 @@ const taskId = '{{ task_id }}';
 let currentTask = null;
 let displayedMessageIds = new Set(); // Track displayed messages to avoid duplicates
 let streamingMessageEl = null; // Current streaming message element
+let scrollTimeout = null; // Debounce scroll
+let lastStateUpdate = 0; // Throttle state updates
 
 // Configure marked for safe rendering (if loaded)
 if (typeof marked !== 'undefined') {
@@ -167,6 +169,18 @@ function renderMessage(msg) {
     `;
 }
 
+// Debounced scroll to prevent performance issues
+function scrollToBottom(immediate = false) {
+    if (scrollTimeout) clearTimeout(scrollTimeout);
+    if (immediate) {
+        window.scrollTo({ top: document.body.scrollHeight });
+    } else {
+        scrollTimeout = setTimeout(() => {
+            window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        }, 100);
+    }
+}
+
 function appendMessage(msg) {
     const container = document.getElementById('chat-messages');
     const msgId = msg.timestamp + '_' + msg.role;
@@ -176,8 +190,7 @@ function appendMessage(msg) {
     displayedMessageIds.add(msgId);
 
     container.insertAdjacentHTML('beforeend', renderMessage(msg));
-    // Scroll page to bottom
-    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    scrollToBottom();
 
     // Clear streaming reference if this is a complete message
     streamingMessageEl = null;
@@ -194,7 +207,7 @@ function startStreamingMessage(role, provider) {
 
     container.insertAdjacentHTML('beforeend', renderMessage(msg));
     streamingMessageEl = container.querySelector('.chat-message:last-child .message-content');
-    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    scrollToBottom(true); // Immediate for new message
 
     return streamingMessageEl;
 }
@@ -203,7 +216,7 @@ function appendToStreamingMessage(content) {
     if (streamingMessageEl) {
         // Append raw text, we'll format when complete
         streamingMessageEl.textContent += content;
-        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        scrollToBottom(false); // Debounced for streaming
     }
 }
 
@@ -302,7 +315,12 @@ function connectStream() {
 function handleStreamEvent(data) {
     switch (data.type) {
         case 'state':
-            if (data.task) updateUI(data.task);
+            // Throttle state updates to max once per 500ms
+            const now = Date.now();
+            if (data.task && (now - lastStateUpdate > 500)) {
+                lastStateUpdate = now;
+                updateUI(data.task);
+            }
             break;
 
         case 'message':
