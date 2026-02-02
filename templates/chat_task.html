@@ -98,13 +98,17 @@ if (typeof marked !== 'undefined') {
 
 // Load task and connect to stream
 async function loadTask() {
+    console.log('Loading task:', taskId);
     const response = await fetch(`/project/${projectName}/chat/${taskId}/json`);
     if (!response.ok) {
+        console.error('Task not found:', response.status);
         alert('Task not found');
         window.location.href = `/project/${projectName}`;
         return;
     }
     currentTask = await response.json();
+    console.log('Task loaded:', currentTask);
+    console.log('Messages:', currentTask.messages);
     updateUI(currentTask);
 }
 
@@ -137,7 +141,8 @@ function updateUI(task) {
     }
 
     // Render messages (only new ones, sorted by timestamp)
-    if (task.messages) {
+    if (task.messages && task.messages.length > 0) {
+        console.log('Rendering', task.messages.length, 'messages');
         // Sort by timestamp to ensure correct order
         const sortedMsgs = [...task.messages].sort((a, b) =>
             new Date(a.timestamp) - new Date(b.timestamp)
@@ -145,10 +150,13 @@ function updateUI(task) {
         for (const msg of sortedMsgs) {
             const msgId = msg.timestamp + '_' + msg.role;
             if (!displayedMessageIds.has(msgId)) {
+                console.log('Appending message:', msg.role, msgId);
                 appendMessage(msg);
                 displayedMessageIds.add(msgId);
             }
         }
+    } else {
+        console.log('No messages to render');
     }
 }
 
@@ -185,13 +193,22 @@ function scrollToBottom(immediate = false) {
 
 function appendMessage(msg) {
     const container = document.getElementById('chat-messages');
+    if (!container) {
+        console.error('chat-messages container not found!');
+        return;
+    }
     const msgId = msg.timestamp + '_' + msg.role;
 
     // Don't add duplicates
-    if (displayedMessageIds.has(msgId)) return;
+    if (displayedMessageIds.has(msgId)) {
+        console.log('Skipping duplicate:', msgId);
+        return;
+    }
     displayedMessageIds.add(msgId);
 
-    container.insertAdjacentHTML('beforeend', renderMessage(msg));
+    const html = renderMessage(msg);
+    console.log('Inserting HTML for:', msg.role);
+    container.insertAdjacentHTML('beforeend', html);
     scrollToBottom();
 
     // Clear streaming reference if this is a complete message
