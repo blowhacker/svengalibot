@@ -30,7 +30,10 @@
         <section id="file-viewer" class="file-viewer" style="display:none">
             <div class="file-viewer-header">
                 <span id="file-viewer-path" class="file-viewer-path"></span>
-                <button id="btn-close-viewer" class="btn-icon" title="Close">×</button>
+                <div class="file-viewer-actions">
+                    <button id="btn-copy-file" class="btn-icon" title="Copy to clipboard">Copy</button>
+                    <button id="btn-close-viewer" class="btn-icon" title="Close">×</button>
+                </div>
             </div>
             <pre id="file-viewer-content" class="file-viewer-content"></pre>
             <div id="file-viewer-markdown" class="markdown-body file-markdown-view" style="display:none"></div>
@@ -107,6 +110,7 @@ function basicMarkdown(text) {
 }
 let expandedDirs = new Set();
 let examplePrompts = [];
+let currentFileContent = ''; // Store raw content for copy
 
 // Load example prompts
 async function loadExamples() {
@@ -347,6 +351,7 @@ async function openFile(path) {
     contentEl.className = 'file-viewer-content';
     contentEl.style.display = 'block';
     markdownEl.style.display = 'none';
+    currentFileContent = ''; // Reset
 
     document.querySelectorAll('.tree-file').forEach(el => el.classList.remove('selected'));
     document.querySelector(`.tree-file[data-path="${path}"]`)?.classList.add('selected');
@@ -357,16 +362,19 @@ async function openFile(path) {
 
         if (data.error) {
             contentEl.textContent = `Error: ${data.error}`;
-        } else if (data.extension === 'md' || data.extension === 'markdown') {
-            // Render markdown
-            contentEl.style.display = 'none';
-            markdownEl.style.display = 'block';
-            if (typeof marked !== 'undefined') {
-                markdownEl.innerHTML = marked.parse(data.content);
-            } else {
-                markdownEl.innerHTML = basicMarkdown(data.content);
-            }
         } else {
+            currentFileContent = data.content; // Store for copy
+
+            if (data.extension === 'md' || data.extension === 'markdown') {
+                // Render markdown
+                contentEl.style.display = 'none';
+                markdownEl.style.display = 'block';
+                if (typeof marked !== 'undefined') {
+                    markdownEl.innerHTML = marked.parse(data.content);
+                } else {
+                    markdownEl.innerHTML = basicMarkdown(data.content);
+                }
+            } else {
             const langMap = {
                 'py': 'python',
                 'js': 'javascript',
@@ -407,6 +415,7 @@ async function openFile(path) {
                 contentEl.textContent = data.content;
                 contentEl.className = 'file-viewer-content';
             }
+            }
         }
     } catch (e) {
         contentEl.textContent = `Error loading file: ${e.message}`;
@@ -416,6 +425,19 @@ async function openFile(path) {
 document.getElementById('btn-close-viewer').addEventListener('click', () => {
     document.getElementById('file-viewer').style.display = 'none';
     document.querySelectorAll('.tree-file').forEach(el => el.classList.remove('selected'));
+});
+
+document.getElementById('btn-copy-file').addEventListener('click', async () => {
+    if (!currentFileContent) return;
+    try {
+        await navigator.clipboard.writeText(currentFileContent);
+        const btn = document.getElementById('btn-copy-file');
+        const orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = orig, 1500);
+    } catch (e) {
+        alert('Failed to copy: ' + e.message);
+    }
 });
 
 document.getElementById('btn-refresh-files').addEventListener('click', loadFileTree);
@@ -511,6 +533,15 @@ loadFileTree();
 .btn-small {
     padding: 0.3rem 0.6rem;
     font-size: 0.8rem;
+}
+.file-viewer-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.file-viewer-actions {
+    display: flex;
+    gap: 0.5rem;
 }
 </style>
 {% endblock %}
