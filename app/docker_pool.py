@@ -124,7 +124,6 @@ class DockerPool:
             "-v", f"{claude_config_dir}:/home/worker/.claude",  # Mount Claude auth (read-only)
             "--memory", self.config.memory_limit,
             "--cpus", str(self.config.cpu_limit),
-            "--network", "none",  # No network access for safety
             IMAGE_NAME,
             "claude", "-p", "--dangerously-skip-permissions", prompt,
         ]
