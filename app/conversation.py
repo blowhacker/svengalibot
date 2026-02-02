@@ -58,6 +58,7 @@ class CollaborationTask:
     # Provider settings (can be overridden by prompt)
     worker_provider: str = "claude"
     reviewer_provider: str = "openai"
+    skip_reviewer: bool = False  # Claude-only mode
 
     # Outcome
     approved: bool = False
@@ -75,6 +76,7 @@ class CollaborationTask:
             "updated_at": self.updated_at,
             "worker_provider": self.worker_provider,
             "reviewer_provider": self.reviewer_provider,
+            "skip_reviewer": self.skip_reviewer,
             "approved": self.approved,
             "error": self.error,
         }

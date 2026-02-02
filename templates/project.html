@@ -39,10 +39,10 @@
             <div id="file-viewer-markdown" class="markdown-body file-markdown-view" style="display:none"></div>
         </section>
 
-        <!-- New Collaboration Task -->
+        <!-- New Task -->
         <section class="new-task collab-section">
-            <h2>Start Collaboration</h2>
-            <p class="section-hint">Describe how Claude and OpenAI should work together on your project.</p>
+            <h2>New Task</h2>
+            <p class="section-hint">Describe what you want to build. Claude will do the work.</p>
 
             <!-- Example Prompts -->
             <div class="example-prompts">
@@ -53,11 +53,18 @@
             </div>
 
             <form id="new-collab-form">
-                <textarea id="collab-prompt" placeholder="Example: Claude writes code to implement the feature. OpenAI reviews for bugs and suggests improvements. Continue until OpenAI approves the implementation." rows="4"></textarea>
+                <textarea id="collab-prompt" placeholder="Describe what you want Claude to build or do..." rows="4"></textarea>
                 <div class="collab-options">
                     <label>
+                        Mode:
+                        <select id="task-mode" class="input-small">
+                            <option value="claude-only">Claude only</option>
+                            <option value="collaboration">Claude + Reviewer</option>
+                        </select>
+                    </label>
+                    <label>
                         Max iterations:
-                        <input type="number" id="max-iterations" value="10" min="1" max="50" class="input-small">
+                        <input type="number" id="max-iterations" value="1" min="1" max="50" class="input-small">
                     </label>
                     <div class="file-attach">
                         <label for="attach-files" class="btn-secondary btn-small">Attach Files</label>
@@ -65,15 +72,15 @@
                         <span id="attached-files-list" class="attached-list"></span>
                     </div>
                 </div>
-                <button type="submit" class="btn-primary">Start Collaboration</button>
+                <button type="submit" class="btn-primary">Start Task</button>
             </form>
         </section>
 
         <!-- Task History -->
         <section class="task-list">
-            <h2>Collaborations</h2>
+            <h2>Tasks</h2>
             <div id="tasks-container">
-                <p class="empty-state">No collaborations yet. Start one above.</p>
+                <p class="empty-state">No tasks yet. Start one above.</p>
             </div>
         </section>
     </div>
@@ -153,14 +160,25 @@ document.getElementById('attach-files').addEventListener('change', (e) => {
     }
 });
 
-// New collaboration form
+// Mode change - adjust defaults
+document.getElementById('task-mode').addEventListener('change', (e) => {
+    const iterInput = document.getElementById('max-iterations');
+    if (e.target.value === 'claude-only') {
+        iterInput.value = '1';
+    } else {
+        iterInput.value = '10';
+    }
+});
+
+// New task form
 document.getElementById('new-collab-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const prompt = document.getElementById('collab-prompt').value.trim();
-    const maxIterations = parseInt(document.getElementById('max-iterations').value) || 10;
+    const maxIterations = parseInt(document.getElementById('max-iterations').value) || 1;
+    const mode = document.getElementById('task-mode').value;
 
     if (!prompt) {
-        alert('Please enter a collaboration prompt');
+        alert('Please enter a prompt');
         return;
     }
 
@@ -170,6 +188,7 @@ document.getElementById('new-collab-form').addEventListener('submit', async (e) 
         const formData = new FormData();
         formData.append('prompt', prompt);
         formData.append('max_iterations', maxIterations);
+        formData.append('mode', mode);
         attachedFiles.forEach(file => formData.append('files', file));
 
         response = await fetch(`/project/${projectName}/chat`, {
@@ -183,6 +202,7 @@ document.getElementById('new-collab-form').addEventListener('submit', async (e) 
             body: JSON.stringify({
                 prompt,
                 max_iterations: maxIterations,
+                mode: mode,
             })
         });
     }
@@ -192,7 +212,7 @@ document.getElementById('new-collab-form').addEventListener('submit', async (e) 
         window.location.href = `/project/${projectName}/chat/${data.id}`;
     } else {
         const error = await response.json();
-        alert(error.error || 'Failed to start collaboration');
+        alert(error.error || 'Failed to start task');
     }
 });
 
@@ -218,7 +238,7 @@ async function loadCollabTasks() {
         const container = document.getElementById('tasks-container');
 
         if (!data.tasks || data.tasks.length === 0) {
-            container.innerHTML = '<p class="empty-state">No collaborations yet. Start one above.</p>';
+            container.innerHTML = '<p class="empty-state">No tasks yet. Start one above.</p>';
             return;
         }
 

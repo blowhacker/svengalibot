@@ -969,17 +969,22 @@ def create_collab_task(project_name):
     # Handle both JSON and multipart form data
     if request.content_type and 'multipart/form-data' in request.content_type:
         prompt = request.form.get("prompt", "").strip()
-        max_iterations = int(request.form.get("max_iterations", 10))
+        max_iterations = int(request.form.get("max_iterations", 1))
         worker_provider = request.form.get("worker_provider", "claude")
         reviewer_provider = request.form.get("reviewer_provider", "openai")
+        mode = request.form.get("mode", "claude-only")
         files = request.files.getlist("files")
     else:
         data = request.get_json() or {}
         prompt = data.get("prompt", "").strip()
-        max_iterations = data.get("max_iterations", 10)
+        max_iterations = data.get("max_iterations", 1)
         worker_provider = data.get("worker_provider", "claude")
         reviewer_provider = data.get("reviewer_provider", "openai")
+        mode = data.get("mode", "claude-only")
         files = []
+
+    # If claude-only mode, disable reviewer
+    skip_reviewer = (mode == "claude-only")
 
     if not prompt:
         return jsonify({"error": "Collaboration prompt is required"}), 400
@@ -1021,6 +1026,7 @@ def create_collab_task(project_name):
         max_iterations=max_iterations,
         worker_provider=worker_provider,
         reviewer_provider=reviewer_provider,
+        skip_reviewer=skip_reviewer,
     )
 
     # Add initial system message
@@ -1147,6 +1153,19 @@ def _run_collaboration(project_name: str, task_id: str, app, orchestrator, proje
                 "type": "message",
                 "data": worker_msg.to_dict(),
             })
+
+            # Skip reviewer in claude-only mode
+            if task.skip_reviewer:
+                # Claude-only mode - task complete after worker turn
+                task.status = ConvTaskStatus.COMPLETED
+                task.approved = True
+                _save_collab_task_direct(project, task)
+
+                _broadcast_collab_event(project_name, task_id, {
+                    "type": "task_completed",
+                    "data": {"message": "Task completed!"},
+                })
+                return
 
             # Reviewer turn (OpenAI)
             _broadcast_collab_event(project_name, task_id, {
