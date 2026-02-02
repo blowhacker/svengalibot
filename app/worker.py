@@ -193,27 +193,33 @@ class Worker:
 
         # Get Claude auth directory
         import os
+        import tempfile
         claude_config_dir = Path.home() / ".claude"
 
+        # Write prompt to a temp file that we'll mount
+        prompt_file = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+        prompt_file.write(prompt)
+        prompt_file.close()
+
         # Build docker run command
-        # Mount host's .claude to /host-claude, then copy auth files while preserving container's MCP config
-        setup_script = '''
-cp -n /host-claude/settings.json /home/worker/.claude/ 2>/dev/null || true
-cp -n /host-claude/credentials.json /home/worker/.claude/ 2>/dev/null || true
-cp -rn /host-claude/auth* /home/worker/.claude/ 2>/dev/null || true
-cat /tmp/prompt.txt | claude -p --dangerously-skip-permissions
-'''
+        # Copy auth files from host, preserving container's MCP config
+        setup_cmd = (
+            "cp -n /host-claude/settings.json /home/worker/.claude/ 2>/dev/null; "
+            "cp -n /host-claude/credentials.json /home/worker/.claude/ 2>/dev/null; "
+            "cp -rn /host-claude/auth* /home/worker/.claude/ 2>/dev/null; "
+            "claude -p --dangerously-skip-permissions \"$(cat /tmp/prompt.txt)\""
+        )
 
         cmd = [
             "docker", "run",
-            "--rm",  # Remove container after exit
-            "-i",  # Keep stdin open for prompt
+            "--rm",
             "-v", f"{self.workspace_dir.absolute()}:/workspace",
-            "-v", f"{claude_config_dir}:/host-claude:ro",  # Mount host auth to temp location
+            "-v", f"{claude_config_dir}:/host-claude:ro",
+            "-v", f"{prompt_file.name}:/tmp/prompt.txt:ro",
             "--memory", self.docker_memory,
             "--cpus", str(self.docker_cpus),
             DOCKER_IMAGE,
-            "bash", "-c", "cat > /tmp/prompt.txt && " + setup_script.replace('\n', ' '),
+            "bash", "-c", setup_cmd,
         ]
 
         logger.info(f"Executing Claude CLI in Docker container")
@@ -226,7 +232,6 @@ cat /tmp/prompt.txt | claude -p --dangerously-skip-permissions
 
             process = subprocess.Popen(
                 cmd,
-                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -235,7 +240,7 @@ cat /tmp/prompt.txt | claude -p --dangerously-skip-permissions
             logger.info("Waiting for Docker Claude to complete (max 10 minutes)...")
 
             try:
-                output, _ = process.communicate(input=prompt, timeout=600)
+                output, _ = process.communicate(timeout=600)
                 logger.info(f"Docker Claude finished with exit code {process.returncode}")
 
                 if on_output and output:
@@ -271,6 +276,12 @@ cat /tmp/prompt.txt | claude -p --dangerously-skip-permissions
                 summary="",
                 error=str(e),
             )
+        finally:
+            # Clean up temp file
+            try:
+                os.unlink(prompt_file.name)
+            except Exception:
+                pass
 
     def execute(
         self,
