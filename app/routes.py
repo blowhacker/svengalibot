@@ -1011,9 +1011,10 @@ def create_collab_task(project_name):
     orchestrator = get_orchestrator()
     projects_dir = current_app.config["PROJECTS_DIR"]
     guide_path = current_app.config["GUIDE_PATH"]
+    config_path = current_app.config["CONFIG_PATH"]
 
     # Start the collaboration in background
-    _start_collaboration(project_name, task_id, app, orchestrator, projects_dir, guide_path)
+    _start_collaboration(project_name, task_id, app, orchestrator, projects_dir, guide_path, config_path)
 
     return jsonify({
         "id": task.id,
@@ -1022,17 +1023,17 @@ def create_collab_task(project_name):
     })
 
 
-def _start_collaboration(project_name: str, task_id: str, app, orchestrator, projects_dir, guide_path):
+def _start_collaboration(project_name: str, task_id: str, app, orchestrator, projects_dir, guide_path, config_path):
     """Start collaboration execution in background thread."""
     thread = threading.Thread(
         target=_run_collaboration,
-        args=(project_name, task_id, app, orchestrator, projects_dir, guide_path),
+        args=(project_name, task_id, app, orchestrator, projects_dir, guide_path, config_path),
         daemon=True,
     )
     thread.start()
 
 
-def _run_collaboration(project_name: str, task_id: str, app, orchestrator, projects_dir, guide_path):
+def _run_collaboration(project_name: str, task_id: str, app, orchestrator, projects_dir, guide_path, config_path):
     """Execute the collaboration loop between worker and reviewer."""
     import time
     from app.state import ProjectManager
@@ -1080,7 +1081,7 @@ def _run_collaboration(project_name: str, task_id: str, app, orchestrator, proje
                 "data": {"message": "Claude is working..."},
             })
 
-            worker_output = _run_worker_turn(project, task, guide, orchestrator)
+            worker_output = _run_worker_turn(project, task, guide, orchestrator, config_path)
 
             if worker_output.get("paused"):
                 return  # Task was paused
@@ -1265,7 +1266,7 @@ def _load_guide_direct(project, guide_path) -> dict:
     return {}
 
 
-def _run_worker_turn(project, task: CollaborationTask, guide: dict, orchestrator) -> dict:
+def _run_worker_turn(project, task: CollaborationTask, guide: dict, orchestrator, config_path) -> dict:
     """Run a single worker turn using Claude."""
     import logging
     logger = logging.getLogger(__name__)
@@ -1313,7 +1314,24 @@ Be substantive and make real progress each iteration.""",
 
     logger.info(f"Starting worker for task {task.id}, iteration {task.iteration}")
 
-    worker = Worker(project.path)
+    # Load worker config
+    worker_config = {}
+    docker_config = {}
+    if config_path and config_path.exists():
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f) or {}
+        worker_config = cfg.get("worker", {})
+        docker_config = cfg.get("docker", {})
+
+    use_docker = worker_config.get("mode") == "docker"
+    logger.info(f"Worker mode: {'docker' if use_docker else 'local'}")
+
+    worker = Worker(
+        project.path,
+        use_docker=use_docker,
+        docker_memory=docker_config.get("memory", "4g") if use_docker else "4g",
+        docker_cpus=docker_config.get("cpus", 2.0) if use_docker else 2.0,
+    )
     output_buffer = []
 
     def on_output(line: str):
@@ -1329,7 +1347,7 @@ Be substantive and make real progress each iteration.""",
     if task_key in _paused_collab_tasks:
         return {"paused": True}
 
-    result = worker.execute_local(
+    result = worker.execute(
         chunk_spec,
         context=context,
         guide=guide,
@@ -1588,9 +1606,10 @@ def resume_collab_task(project_name, task_id):
     orchestrator = get_orchestrator()
     projects_dir = current_app.config["PROJECTS_DIR"]
     guide_path = current_app.config["GUIDE_PATH"]
+    config_path = current_app.config["CONFIG_PATH"]
 
     # Restart the collaboration from current iteration
-    _start_collaboration(project_name, task_id, app, orchestrator, projects_dir, guide_path)
+    _start_collaboration(project_name, task_id, app, orchestrator, projects_dir, guide_path, config_path)
 
     return jsonify({"status": "resumed"})
 
