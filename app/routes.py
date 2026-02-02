@@ -1249,6 +1249,52 @@ def _extract_files_from_diff(diff: str) -> list[str]:
     return sorted(files)
 
 
+def _fetch_urls_from_text(text: str) -> dict[str, str]:
+    """Extract URLs from text and fetch their content.
+
+    Returns dict of {url: content} for successfully fetched URLs.
+    """
+    import re
+    import requests
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # Find URLs in text
+    url_pattern = r'https?://[^\s<>"\')\]]+\.[^\s<>"\')\]]+'
+    urls = re.findall(url_pattern, text)
+
+    # Dedupe while preserving order
+    seen = set()
+    unique_urls = []
+    for url in urls:
+        # Clean trailing punctuation
+        url = url.rstrip('.,;:!?')
+        if url not in seen:
+            seen.add(url)
+            unique_urls.append(url)
+
+    results = {}
+    for url in unique_urls[:5]:  # Limit to 5 URLs
+        try:
+            logger.info(f"Pre-fetching URL: {url}")
+            resp = requests.get(url, timeout=10, headers={
+                'User-Agent': 'Mozilla/5.0 (compatible; Svengalibot/1.0)'
+            })
+            if resp.status_code == 200:
+                content = resp.text
+                # Truncate if too long
+                if len(content) > 20000:
+                    content = content[:20000] + "\n\n... (truncated)"
+                results[url] = content
+                logger.info(f"Fetched {len(content)} chars from {url}")
+            else:
+                logger.warning(f"Failed to fetch {url}: HTTP {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch {url}: {e}")
+
+    return results
+
+
 def _load_guide_for_project(project) -> dict:
     """Load guide for a project (requires Flask context)."""
     guide_path = current_app.config["GUIDE_PATH"]
@@ -1282,6 +1328,46 @@ def _run_worker_turn(project, task: CollaborationTask, guide: dict, orchestrator
         conversation_parts.append(f"**{provider}:**\n{msg.content}")
 
     context = "\n\n".join(conversation_parts) if conversation_parts else ""
+
+    # On first iteration, pre-fetch any URLs mentioned in the prompt
+    if task.iteration <= 1:
+        fetched_urls = _fetch_urls_from_text(task.prompt)
+        if fetched_urls:
+            url_content_parts = []
+            for url, content in fetched_urls.items():
+                # Try to extract text from HTML
+                from html.parser import HTMLParser
+                class TextExtractor(HTMLParser):
+                    def __init__(self):
+                        super().__init__()
+                        self.text_parts = []
+                        self.skip_tags = {'script', 'style', 'noscript'}
+                        self.current_skip = False
+                    def handle_starttag(self, tag, attrs):
+                        if tag.lower() in self.skip_tags:
+                            self.current_skip = True
+                    def handle_endtag(self, tag):
+                        if tag.lower() in self.skip_tags:
+                            self.current_skip = False
+                    def handle_data(self, data):
+                        if not self.current_skip:
+                            text = data.strip()
+                            if text:
+                                self.text_parts.append(text)
+
+                try:
+                    extractor = TextExtractor()
+                    extractor.feed(content)
+                    text_content = ' '.join(extractor.text_parts)
+                    if len(text_content) > 15000:
+                        text_content = text_content[:15000] + "... (truncated)"
+                except Exception:
+                    text_content = content[:15000] if len(content) > 15000 else content
+
+                url_content_parts.append(f"### Content from {url}\n\n{text_content}")
+
+            context = "## Pre-fetched Web Content\n\n" + "\n\n---\n\n".join(url_content_parts) + "\n\n" + context
+            logger.info(f"Added {len(fetched_urls)} pre-fetched URLs to context")
 
     # Build task spec - include that this is a collaboration
     chunk_spec = {
