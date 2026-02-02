@@ -48,9 +48,9 @@
             <!-- Messages will be inserted here -->
         </div>
 
-        <!-- Input area (for manual intervention if needed) -->
-        <div class="chat-input" id="chat-input" style="display:none">
-            <textarea id="user-input" placeholder="Send a message to intervene..." rows="2"></textarea>
+        <!-- Human input area -->
+        <div class="chat-input" id="chat-input">
+            <textarea id="user-input" placeholder="Add input for next iteration..." rows="2"></textarea>
             <button id="btn-send" class="btn-primary">Send</button>
         </div>
     </div>
@@ -438,6 +438,45 @@ document.getElementById('btn-stop').addEventListener('click', async () => {
         loadTask();
     }
 });
+
+// Human input
+document.getElementById('btn-send').addEventListener('click', sendHumanInput);
+document.getElementById('user-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendHumanInput();
+    }
+});
+
+async function sendHumanInput() {
+    const input = document.getElementById('user-input');
+    const content = input.value.trim();
+    if (!content) return;
+
+    try {
+        const response = await fetch(`/project/${projectName}/chat/${taskId}/human-input`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content }),
+        });
+
+        if (response.ok) {
+            // Clear input and show message
+            input.value = '';
+            appendMessage({
+                role: 'user',
+                provider: 'user',
+                content: content,
+                timestamp: new Date().toISOString(),
+            });
+        } else {
+            const err = await response.json();
+            alert('Failed to send: ' + (err.error || 'Unknown error'));
+        }
+    } catch (e) {
+        alert('Failed to send: ' + e.message);
+    }
+}
 
 // File tree
 async function loadFileTree() {

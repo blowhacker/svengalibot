@@ -523,7 +523,9 @@ Be extremely specific and actionable. The next attempt MUST succeed."""
             provider = msg.get("provider", role)
             content = msg.get("content", "")
 
-            if provider == "claude" or role == "worker":
+            if provider == "user" or role == "user":
+                history_text += f"\n**Human:**\n{content}\n"
+            elif provider == "claude" or role == "worker":
                 history_text += f"\n**Claude:**\n{content}\n"
             elif provider == "openai" or role == "reviewer":
                 history_text += f"\n**OpenAI (You previously):**\n{content}\n"

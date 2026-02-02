@@ -1339,8 +1339,13 @@ def _run_worker_turn(project, task: CollaborationTask, guide: dict, orchestrator
     for msg in task.messages:
         if msg.role == "system":
             continue  # Skip system messages
-        provider = "OpenAI" if msg.provider == "openai" or msg.role == "reviewer" else "You (Claude)"
-        conversation_parts.append(f"**{provider}:**\n{msg.content}")
+        if msg.provider == "user" or msg.role == "user":
+            label = "Human"
+        elif msg.provider == "openai" or msg.role == "reviewer":
+            label = "OpenAI"
+        else:
+            label = "You (Claude)"
+        conversation_parts.append(f"**{label}:**\n{msg.content}")
 
     context = "\n\n".join(conversation_parts) if conversation_parts else ""
 
@@ -1732,6 +1737,38 @@ def cancel_collab_task(project_name, task_id):
     })
 
     return jsonify({"status": "cancelled"})
+
+
+@main_bp.route("/project/<project_name>/chat/<task_id>/human-input", methods=["POST"])
+def add_human_input(project_name, task_id):
+    """Add human input to be included in next iteration."""
+    task = _get_collab_task(project_name, task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+
+    data = request.get_json()
+    content = data.get("content", "").strip()
+    if not content:
+        return jsonify({"error": "No content provided"}), 400
+
+    # Add human message to task
+    pm = get_project_manager()
+    project = pm.get_project(project_name)
+
+    human_msg = task.add_message(
+        role="user",
+        content=content,
+        provider="user",
+    )
+    _save_collab_task(project_name, task)
+
+    # Broadcast the message
+    _broadcast_collab_event(project_name, task_id, {
+        "type": "message",
+        "data": human_msg.to_dict(),
+    })
+
+    return jsonify({"status": "added"})
 
 
 @main_bp.route("/project/<project_name>/chats")
