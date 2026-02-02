@@ -82,6 +82,8 @@ let displayedMessageIds = new Set(); // Track displayed messages to avoid duplic
 let streamingMessageEl = null; // Current streaming message element
 let scrollTimeout = null; // Debounce scroll
 let lastStateUpdate = 0; // Throttle state updates
+let lastChunkOutput = 0; // Throttle chunk output
+let pendingChunkContent = ''; // Buffer for throttled chunks
 
 // Configure marked for safe rendering (if loaded)
 if (typeof marked !== 'undefined') {
@@ -221,6 +223,12 @@ function appendToStreamingMessage(content) {
 }
 
 function finalizeStreamingMessage() {
+    // Flush any pending content
+    if (pendingChunkContent && streamingMessageEl) {
+        streamingMessageEl.textContent += pendingChunkContent;
+        pendingChunkContent = '';
+    }
+
     if (streamingMessageEl) {
         // Re-render with markdown
         const text = streamingMessageEl.textContent;
@@ -350,11 +358,20 @@ function handleStreamEvent(data) {
             break;
 
         case 'chunk_output':
-            // Worker output streaming
-            if (!streamingMessageEl) {
-                startStreamingMessage('worker', 'claude');
+            // Worker output streaming - throttle to prevent UI lock
+            const now = Date.now();
+            pendingChunkContent += (data.data?.content || '');
+
+            if (now - lastChunkOutput >= 100) { // Max 10 updates/sec
+                lastChunkOutput = now;
+                if (!streamingMessageEl) {
+                    startStreamingMessage('worker', 'claude');
+                }
+                if (pendingChunkContent) {
+                    appendToStreamingMessage(pendingChunkContent);
+                    pendingChunkContent = '';
+                }
             }
-            appendToStreamingMessage(data.data?.content || '');
             break;
 
         case 'chunk_reviewing':

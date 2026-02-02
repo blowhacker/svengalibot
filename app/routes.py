@@ -1476,14 +1476,21 @@ Be substantive and make real progress each iteration.""",
         docker_cpus=docker_config.get("cpus", 2.0) if use_docker else 2.0,
     )
     output_buffer = []
+    last_broadcast = [0]  # Use list to allow mutation in closure
 
     def on_output(line: str):
+        import time
         output_buffer.append(line)
         logger.debug(f"Worker output: {line[:100]}...")
-        _broadcast_collab_event(project.name, task.id, {
-            "type": "chunk_output",
-            "data": {"content": line},
-        })
+
+        # Throttle broadcasts to max once per 200ms
+        now = time.time()
+        if now - last_broadcast[0] >= 0.2:
+            last_broadcast[0] = now
+            _broadcast_collab_event(project.name, task.id, {
+                "type": "chunk_output",
+                "data": {"content": line},
+            })
 
     # Check if paused
     task_key = f"{project.name}:{task.id}"
