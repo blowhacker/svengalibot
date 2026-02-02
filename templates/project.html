@@ -427,17 +427,28 @@ document.getElementById('btn-close-viewer').addEventListener('click', () => {
     document.querySelectorAll('.tree-file').forEach(el => el.classList.remove('selected'));
 });
 
-document.getElementById('btn-copy-file').addEventListener('click', async () => {
+document.getElementById('btn-copy-file').addEventListener('click', () => {
     if (!currentFileContent) return;
+
+    // Fallback for non-HTTPS contexts
+    const textarea = document.createElement('textarea');
+    textarea.value = currentFileContent;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+
     try {
-        await navigator.clipboard.writeText(currentFileContent);
+        document.execCommand('copy');
         const btn = document.getElementById('btn-copy-file');
         const orig = btn.textContent;
         btn.textContent = 'Copied!';
         setTimeout(() => btn.textContent = orig, 1500);
     } catch (e) {
-        alert('Failed to copy: ' + e.message);
+        alert('Failed to copy');
     }
+
+    document.body.removeChild(textarea);
 });
 
 document.getElementById('btn-refresh-files').addEventListener('click', loadFileTree);
