@@ -20,12 +20,20 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
 # Install Claude CLI globally (as root)
 RUN npm install -g @anthropic-ai/claude-code
 
+# Install MCP fetch server for web access
+RUN npm install -g @anthropic-ai/mcp-server-fetch
+
 # Create non-root user (Claude CLI won't run --dangerously-skip-permissions as root)
 RUN useradd -m -s /bin/bash worker && \
     echo "worker ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Git config for worker user
 RUN su - worker -c 'git config --global user.email "worker@svengalibot.local" && git config --global user.name "Svengalibot Worker"'
+
+# Create MCP config for worker user
+RUN mkdir -p /home/worker/.claude && \
+    echo '{"mcpServers":{"fetch":{"command":"mcp-server-fetch"}}}' > /home/worker/.claude/mcp_servers.json && \
+    chown -R worker:worker /home/worker/.claude
 
 # Switch to worker user
 USER worker

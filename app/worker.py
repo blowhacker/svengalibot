@@ -196,15 +196,24 @@ class Worker:
         claude_config_dir = Path.home() / ".claude"
 
         # Build docker run command
+        # Mount host's .claude to /host-claude, then copy auth files while preserving container's MCP config
+        setup_script = '''
+cp -n /host-claude/settings.json /home/worker/.claude/ 2>/dev/null || true
+cp -n /host-claude/credentials.json /home/worker/.claude/ 2>/dev/null || true
+cp -rn /host-claude/auth* /home/worker/.claude/ 2>/dev/null || true
+cat /tmp/prompt.txt | claude -p --dangerously-skip-permissions
+'''
+
         cmd = [
             "docker", "run",
             "--rm",  # Remove container after exit
+            "-i",  # Keep stdin open for prompt
             "-v", f"{self.workspace_dir.absolute()}:/workspace",
-            "-v", f"{claude_config_dir}:/home/worker/.claude",  # Mount Claude auth (read-only)
+            "-v", f"{claude_config_dir}:/host-claude:ro",  # Mount host auth to temp location
             "--memory", self.docker_memory,
             "--cpus", str(self.docker_cpus),
             DOCKER_IMAGE,
-            "claude", "-p", "--dangerously-skip-permissions", prompt,
+            "bash", "-c", "cat > /tmp/prompt.txt && " + setup_script.replace('\n', ' '),
         ]
 
         logger.info(f"Executing Claude CLI in Docker container")
@@ -217,6 +226,7 @@ class Worker:
 
             process = subprocess.Popen(
                 cmd,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -225,7 +235,7 @@ class Worker:
             logger.info("Waiting for Docker Claude to complete (max 10 minutes)...")
 
             try:
-                output, _ = process.communicate(timeout=600)
+                output, _ = process.communicate(input=prompt, timeout=600)
                 logger.info(f"Docker Claude finished with exit code {process.returncode}")
 
                 if on_output and output:
