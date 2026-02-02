@@ -1259,9 +1259,22 @@ def _fetch_urls_from_text(text: str) -> dict[str, str]:
     import logging
     logger = logging.getLogger(__name__)
 
-    # Find URLs in text
+    # Find URLs in text (with or without http/https prefix)
+    # Match full URLs
     url_pattern = r'https?://[^\s<>"\')\]]+\.[^\s<>"\')\]]+'
     urls = re.findall(url_pattern, text)
+
+    # Also match bare domains like "example.com" or "sub.example.com"
+    domain_pattern = r'\b([a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,}\b'
+    bare_domains = re.findall(domain_pattern, text)
+    # Reconstruct full domain from the pattern match
+    for match in re.finditer(r'\b((?:[a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,})\b', text):
+        domain = match.group(1)
+        # Skip common non-URL patterns
+        if domain.endswith('.js') or domain.endswith('.css') or domain.endswith('.png'):
+            continue
+        if not domain.startswith('http'):
+            urls.append(f'https://{domain}')
 
     # Dedupe while preserving order
     seen = set()
@@ -1269,8 +1282,10 @@ def _fetch_urls_from_text(text: str) -> dict[str, str]:
     for url in urls:
         # Clean trailing punctuation
         url = url.rstrip('.,;:!?')
-        if url not in seen:
-            seen.add(url)
+        # Normalize
+        normalized = url.lower().rstrip('/')
+        if normalized not in seen:
+            seen.add(normalized)
             unique_urls.append(url)
 
     results = {}
