@@ -197,11 +197,12 @@ class Worker:
 
         # Build docker run command
         # Mount host's .claude to /host-claude, then copy auth files while preserving container's MCP config
-        setup_script = '''
-cp -n /host-claude/.credentials.json /home/worker/.claude/ 2>/dev/null || true
-cp -n /host-claude/settings.json /home/worker/.claude/ 2>/dev/null || true
-cat /tmp/prompt.txt | claude -p --dangerously-skip-permissions
-'''
+        setup_script = (
+            "cat > /tmp/prompt.txt; "
+            "cp -n /host-claude/.credentials.json /home/worker/.claude/ 2>/dev/null; "
+            "cp -n /host-claude/settings.json /home/worker/.claude/ 2>/dev/null; "
+            "cat /tmp/prompt.txt | claude -p --dangerously-skip-permissions"
+        )
 
         cmd = [
             "docker", "run",
@@ -212,10 +213,11 @@ cat /tmp/prompt.txt | claude -p --dangerously-skip-permissions
             "--memory", self.docker_memory,
             "--cpus", str(self.docker_cpus),
             DOCKER_IMAGE,
-            "bash", "-c", "cat > /tmp/prompt.txt && " + setup_script.replace('\n', ' '),
+            "bash", "-c", setup_script,
         ]
 
         logger.info(f"Executing Claude CLI in Docker container")
+        logger.info(f"Docker script: {setup_script}")
         logger.debug(f"Prompt (first 200 chars): {prompt[:200]}...")
 
         try:
