@@ -19,7 +19,10 @@
     <div class="project-main">
         <header class="project-header">
             <a href="/" class="back-link">&larr; All Projects</a>
-            <h1 id="project-name">{{ project_name }}</h1>
+            <div class="project-title-row">
+                <h1 id="project-name">{{ project_name }}</h1>
+                <button id="btn-delete-project" class="btn-danger btn-small" title="Delete project">Delete</button>
+            </div>
             <p id="project-path" class="project-path"></p>
         </header>
 
@@ -417,6 +420,31 @@ document.getElementById('btn-close-viewer').addEventListener('click', () => {
 
 document.getElementById('btn-refresh-files').addEventListener('click', loadFileTree);
 
+// Delete project
+document.getElementById('btn-delete-project').addEventListener('click', async () => {
+    const deleteFiles = confirm('Delete project "' + projectName + '"?\n\nClick OK to remove project from Svengalibot.\nClick Cancel to keep it.');
+    if (deleteFiles === null) return; // User cancelled
+
+    const confirmDelete = confirm('Also delete all project files?\n\nOK = Delete everything\nCancel = Keep files, only remove from Svengalibot');
+
+    try {
+        const response = await fetch(`/project/${projectName}`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ delete_files: confirmDelete }),
+        });
+
+        if (response.ok) {
+            window.location.href = '/';
+        } else {
+            const err = await response.json();
+            alert('Failed to delete: ' + (err.error || 'Unknown error'));
+        }
+    } catch (e) {
+        alert('Failed to delete: ' + e.message);
+    }
+});
+
 // Initialize
 loadExamples();
 loadProject();
@@ -471,6 +499,18 @@ loadFileTree();
     overflow: auto;
     background: #1e1e2e;
     border-radius: 4px;
+}
+.project-title-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+.project-title-row h1 {
+    margin: 0;
+}
+.btn-small {
+    padding: 0.3rem 0.6rem;
+    font-size: 0.8rem;
 }
 </style>
 {% endblock %}
