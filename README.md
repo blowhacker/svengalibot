@@ -10,7 +10,9 @@ Modern AI assistants are powerful but work in isolation. Svengalibot introduces 
 - **Collaborator (OpenAI/Claude)**: Provides feedback, suggests improvements, validates work
 - **Human (You)**: Supervises, approves, intervenes when needed
 
-This creates a workflow similar to how human teams operate - one person does the work, another provides feedback, and iteration continues until the result meets standards.
+The workflow is iterative: Claude executes a task, the collaborator reviews and provides feedback, then Claude incorporates that feedback and tries again. This continues until the collaborator approves or max iterations are reached.
+
+In **Claude-only mode**, Svengalibot acts as a simple web UI wrapper for Claude CLI - giving you a browser-based interface with file browsing, diff viewing, and project organization.
 
 ## Features
 
@@ -163,9 +165,20 @@ Open `http://localhost:5000` in your browser.
 
 | Mode | Worker | Collaborator | Use Case |
 |------|--------|--------------|----------|
-| Claude only | Claude CLI | None | Simple tasks, prototyping |
-| Claude + OpenAI | Claude CLI | GPT-4/GPT-5 | Code review, brainstorming, research |
+| Claude only | Claude CLI | None | Web UI for Claude CLI - simple tasks, prototyping |
+| Claude + OpenAI | Claude CLI | GPT-4/GPT-5 | Iterative collaboration with feedback loop |
 | Claude + Claude | Claude CLI | Claude API | Self-collaboration (coming soon) |
+
+### Iteration Flow
+
+```
+1. You submit a task
+2. Claude (worker) executes the task, writes files, commits changes
+3. Collaborator reviews Claude's output and provides feedback
+4. Claude incorporates feedback, makes more changes
+5. Repeat until collaborator approves or max iterations reached
+6. You review the final result
+```
 
 ### Collaboration Types
 
