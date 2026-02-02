@@ -1,21 +1,22 @@
 # Svengalibot
 
-A multi-agent AI collaboration system that orchestrates AI models to work together on coding tasks. Claude acts as the worker (writing code), while another AI (OpenAI or Claude) acts as the reviewer, creating an iterative feedback loop until the task meets quality standards.
+A multi-agent AI collaboration system that orchestrates AI models to work together on tasks. Claude acts as the worker (executing tasks, writing code/content), while another AI (OpenAI, Claude, or others) acts as a collaborator, creating an iterative feedback loop.
 
 ## Why Svengalibot?
 
-Modern AI coding assistants are powerful but work in isolation. Svengalibot introduces **collaborative AI** - multiple AI models working together with complementary strengths:
+Modern AI assistants are powerful but work in isolation. Svengalibot introduces **collaborative AI** - multiple AI models working together with complementary strengths:
 
-- **Worker (Claude)**: Executes coding tasks, writes files, makes commits
-- **Reviewer (OpenAI/Claude)**: Reviews code, provides feedback, ensures quality
+- **Worker (Claude)**: Executes tasks, writes files, makes commits
+- **Collaborator (OpenAI/Claude)**: Provides feedback, suggests improvements, validates work
 - **Human (You)**: Supervises, approves, intervenes when needed
 
-This creates a workflow similar to how human development teams operate: one person writes code, another reviews it, and a lead approves the final result.
+This creates a workflow similar to how human teams operate - one person does the work, another provides feedback, and iteration continues until the result meets standards.
 
 ## Features
 
-- **Multi-Agent Collaboration**: Claude writes code, OpenAI (or another Claude) reviews it
-- **Claude-Only Mode**: Skip the reviewer for simple tasks
+- **Multi-Agent Collaboration**: Claude executes tasks, OpenAI (or another Claude) provides feedback
+- **Flexible Collaboration Types**: Code review, brainstorming, writing & editing, research, debate
+- **Claude-Only Mode**: Skip the collaborator for simple tasks
 - **Real-time Streaming**: Watch AI work in real-time via web UI
 - **Project Management**: Organize work into projects with their own codebases
 - **Code Guide System**: Define coding standards that AIs must follow
@@ -42,12 +43,12 @@ This creates a workflow similar to how human development teams operate: one pers
               ┌───────────────┴───────────────┐
               ▼                               ▼
 ┌──────────────────────────┐    ┌──────────────────────────────┐
-│   Worker (Claude CLI)    │    │   Reviewer (OpenAI/Claude)   │
+│   Worker (Claude CLI)    │    │ Collaborator (OpenAI/Claude) │
 │                          │    │                              │
-│  - Reads task spec       │    │  - Reviews code changes      │
-│  - Writes/edits files    │    │  - Checks against guide      │
-│  - Makes git commits     │    │  - Approves or requests      │
-│  - Reports summary       │    │    changes                   │
+│  - Reads task spec       │    │  - Reviews work output       │
+│  - Writes/edits files    │    │  - Provides feedback         │
+│  - Makes git commits     │    │  - Suggests improvements     │
+│  - Reports summary       │    │  - Approves or iterates      │
 └──────────────────────────┘    └──────────────────────────────┘
 ```
 
@@ -158,13 +159,23 @@ Open `http://localhost:5000` in your browser.
 - **Check diffs**: See what changed in each iteration
 - **Intervene**: Pause, add instructions, or stop the task
 
-### Modes
+### Collaboration Modes
 
-| Mode | Worker | Reviewer | Use Case |
-|------|--------|----------|----------|
+| Mode | Worker | Collaborator | Use Case |
+|------|--------|--------------|----------|
 | Claude only | Claude CLI | None | Simple tasks, prototyping |
-| Claude + OpenAI | Claude CLI | GPT-4/GPT-5 | Code review, quality assurance |
-| Claude + Claude | Claude CLI | Claude API | Alternative reviewer (coming soon) |
+| Claude + OpenAI | Claude CLI | GPT-4/GPT-5 | Code review, brainstorming, research |
+| Claude + Claude | Claude CLI | Claude API | Self-collaboration (coming soon) |
+
+### Collaboration Types
+
+Svengalibot supports various collaboration patterns:
+
+- **Code Review**: Claude implements, collaborator reviews for bugs and quality
+- **Brainstorming**: Claude generates ideas, collaborator evaluates and refines
+- **Writing & Editing**: Claude writes content, collaborator provides editorial feedback
+- **Research**: Claude researches topics, collaborator fact-checks and identifies gaps
+- **Debate**: Claude takes a position, collaborator plays devil's advocate
 
 ## Execution Modes
 
