@@ -59,6 +59,11 @@
                         Max iterations:
                         <input type="number" id="max-iterations" value="10" min="1" max="50" class="input-small">
                     </label>
+                    <div class="file-attach">
+                        <label for="attach-files" class="btn-secondary btn-small">Attach Files</label>
+                        <input type="file" id="attach-files" multiple style="display:none">
+                        <span id="attached-files-list" class="attached-list"></span>
+                    </div>
                 </div>
                 <button type="submit" class="btn-primary">Start Collaboration</button>
             </form>
@@ -142,6 +147,18 @@ function renderExampleButtons() {
     });
 }
 
+// File attachment handling
+let attachedFiles = [];
+document.getElementById('attach-files').addEventListener('change', (e) => {
+    attachedFiles = Array.from(e.target.files);
+    const listEl = document.getElementById('attached-files-list');
+    if (attachedFiles.length > 0) {
+        listEl.textContent = attachedFiles.map(f => f.name).join(', ');
+    } else {
+        listEl.textContent = '';
+    }
+});
+
 // New collaboration form
 document.getElementById('new-collab-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -153,14 +170,28 @@ document.getElementById('new-collab-form').addEventListener('submit', async (e) 
         return;
     }
 
-    const response = await fetch(`/project/${projectName}/chat`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-            prompt,
-            max_iterations: maxIterations,
-        })
-    });
+    // Use FormData if files attached, otherwise JSON
+    let response;
+    if (attachedFiles.length > 0) {
+        const formData = new FormData();
+        formData.append('prompt', prompt);
+        formData.append('max_iterations', maxIterations);
+        attachedFiles.forEach(file => formData.append('files', file));
+
+        response = await fetch(`/project/${projectName}/chat`, {
+            method: 'POST',
+            body: formData,
+        });
+    } else {
+        response = await fetch(`/project/${projectName}/chat`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                prompt,
+                max_iterations: maxIterations,
+            })
+        });
+    }
 
     if (response.ok) {
         const data = await response.json();
@@ -552,6 +583,26 @@ loadFileTree();
 }
 .file-viewer-actions {
     display: flex;
+    gap: 0.5rem;
+}
+.file-attach {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-left: 1rem;
+}
+.attached-list {
+    font-size: 0.85rem;
+    color: #888;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.collab-options {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
     gap: 0.5rem;
 }
 </style>

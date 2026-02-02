@@ -964,9 +964,22 @@ def create_collab_task(project_name):
     """Create a new chat/collaboration task."""
     import uuid
     from datetime import datetime
+    from pathlib import Path
 
-    data = request.get_json()
-    prompt = data.get("prompt", "").strip()
+    # Handle both JSON and multipart form data
+    if request.content_type and 'multipart/form-data' in request.content_type:
+        prompt = request.form.get("prompt", "").strip()
+        max_iterations = int(request.form.get("max_iterations", 10))
+        worker_provider = request.form.get("worker_provider", "claude")
+        reviewer_provider = request.form.get("reviewer_provider", "openai")
+        files = request.files.getlist("files")
+    else:
+        data = request.get_json() or {}
+        prompt = data.get("prompt", "").strip()
+        max_iterations = data.get("max_iterations", 10)
+        worker_provider = data.get("worker_provider", "claude")
+        reviewer_provider = data.get("reviewer_provider", "openai")
+        files = []
 
     if not prompt:
         return jsonify({"error": "Collaboration prompt is required"}), 400
@@ -976,14 +989,38 @@ def create_collab_task(project_name):
     if not project:
         return jsonify({"error": "Project not found"}), 404
 
+    # Handle attached files - save to project and build context
+    attached_context = ""
+    if files:
+        attachments_dir = Path(project.path) / ".svengali" / "attachments"
+        attachments_dir.mkdir(parents=True, exist_ok=True)
+
+        attached_files = []
+        for f in files:
+            if f.filename:
+                # Save file
+                safe_name = f.filename.replace("/", "_").replace("\\", "_")
+                file_path = attachments_dir / safe_name
+                f.save(file_path)
+
+                # Read content for context (text files only)
+                try:
+                    content = file_path.read_text(encoding="utf-8", errors="replace")
+                    attached_files.append(f"## {safe_name}\n```\n{content}\n```")
+                except Exception:
+                    attached_files.append(f"## {safe_name}\n(binary file)")
+
+        if attached_files:
+            attached_context = "\n\n---\n**Attached Files:**\n\n" + "\n\n".join(attached_files)
+
     # Create task
     task_id = f"chat_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     task = CollaborationTask(
         id=task_id,
-        prompt=prompt,
-        max_iterations=data.get("max_iterations", 10),
-        worker_provider=data.get("worker_provider", "claude"),
-        reviewer_provider=data.get("reviewer_provider", "openai"),
+        prompt=prompt + attached_context,
+        max_iterations=max_iterations,
+        worker_provider=worker_provider,
+        reviewer_provider=reviewer_provider,
     )
 
     # Add initial system message
