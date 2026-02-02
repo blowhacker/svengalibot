@@ -302,9 +302,18 @@ function handleStreamEvent(data) {
             break;
 
         case 'message':
-            // New complete message - finalize any streaming first
-            finalizeStreamingMessage();
-            appendMessage(data.data);
+            // New complete message
+            const msgRole = data.data?.role || data.data?.provider;
+
+            // If we were streaming a worker message, just finalize it (don't duplicate)
+            if (streamingMessageEl && (msgRole === 'worker' || data.data?.provider === 'claude')) {
+                // Update streaming message content with final version (includes files)
+                streamingMessageEl.innerHTML = formatContent(data.data?.content || '', 'worker');
+                streamingMessageEl = null;
+            } else {
+                finalizeStreamingMessage();
+                appendMessage(data.data);
+            }
             break;
 
         case 'message_chunk':
@@ -337,23 +346,12 @@ function handleStreamEvent(data) {
             break;
 
         case 'chunk_approved':
-            appendMessage({
-                role: 'reviewer',
-                provider: 'openai',
-                content: '✅ **Approved:** ' + (data.data?.notes || 'Work looks good!'),
-                timestamp: new Date().toISOString(),
-            });
+            // Message comes via separate 'message' event - just update UI
             updateIterationCount();
             break;
 
         case 'chunk_rejected':
-            const review = data.data?.review || {};
-            appendMessage({
-                role: 'reviewer',
-                provider: 'openai',
-                content: '❌ **Changes requested:**\n\n' + (review.feedback_for_retry || review.summary || 'Please revise.'),
-                timestamp: new Date().toISOString(),
-            });
+            // Message comes via separate 'message' event - just update UI
             updateIterationCount();
             break;
 
