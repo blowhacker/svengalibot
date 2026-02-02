@@ -132,9 +132,13 @@ function updateUI(task) {
         btnResume.style.display = 'none';
     }
 
-    // Render messages (only new ones)
+    // Render messages (only new ones, sorted by timestamp)
     if (task.messages) {
-        for (const msg of task.messages) {
+        // Sort by timestamp to ensure correct order
+        const sortedMsgs = [...task.messages].sort((a, b) =>
+            new Date(a.timestamp) - new Date(b.timestamp)
+        );
+        for (const msg of sortedMsgs) {
             const msgId = msg.timestamp + '_' + msg.role;
             if (!displayedMessageIds.has(msgId)) {
                 appendMessage(msg);
@@ -461,14 +465,8 @@ async function sendHumanInput() {
         });
 
         if (response.ok) {
-            // Clear input and show message
+            // Clear input - message will appear via SSE event
             input.value = '';
-            appendMessage({
-                role: 'user',
-                provider: 'user',
-                content: content,
-                timestamp: new Date().toISOString(),
-            });
         } else {
             const err = await response.json();
             alert('Failed to send: ' + (err.error || 'Unknown error'));
