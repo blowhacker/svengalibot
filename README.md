@@ -306,6 +306,6 @@ MIT License - see LICENSE file.
 
 ## Acknowledgments
 
-- [Claude CLI](https://github.com/anthropics/claude-cli) by Anthropic
+- [Claude CLI](https://github.com/anthropics/claude-code) by Anthropic
 - [OpenAI API](https://platform.openai.com/) for reviewer capabilities
 - Built with Flask, vanilla JS, and determination
