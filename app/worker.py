@@ -208,10 +208,23 @@ class Worker:
 
         # Build docker run command
         # Mount host's .claude to /host-claude, then copy auth files (overwrite any existing)
+        # Note: We use cat|tee instead of cp to handle permission issues with different UIDs
         setup_script = (
             "cat > /tmp/prompt.txt; "
-            "cp /host-claude/.credentials.json /home/worker/.claude/ 2>/dev/null; "
-            "cp /host-claude/settings.json /home/worker/.claude/ 2>/dev/null; "
+            "echo '=== Debug: Docker worker user ==='; "
+            "id; "
+            "echo '=== Debug: Container .claude BEFORE copy ==='; "
+            "ls -la /home/worker/.claude/ 2>&1; "
+            "echo '=== Debug: Host mount contents ==='; "
+            "ls -la /host-claude/ 2>&1; "
+            "echo '=== Debug: Host credentials (first 100 chars) ==='; "
+            "head -c 100 /host-claude/.credentials.json 2>&1; echo; "
+            "echo '=== Copying credentials ==='; "
+            "cat /host-claude/.credentials.json > /home/worker/.claude/.credentials.json 2>&1 && echo 'OK' || echo 'FAILED'; "
+            "cat /host-claude/settings.json > /home/worker/.claude/settings.json 2>&1 && echo 'settings OK' || echo 'settings FAILED'; "
+            "echo '=== Credentials expiresAt ==='; "
+            "grep -o 'expiresAt\":[0-9]*' /home/worker/.claude/.credentials.json | head -1; "
+            "echo '=== Running Claude ==='; "
             "cat /tmp/prompt.txt | claude -p --dangerously-skip-permissions"
         )
 
@@ -221,6 +234,7 @@ class Worker:
             "-i",  # Keep stdin open for prompt
             "-v", f"{self.workspace_dir.absolute()}:/workspace",
             "-v", f"{claude_config_dir}:/host-claude:ro",  # Mount host auth to temp location
+            "-e", "HOME=/home/worker",  # Ensure Claude looks in right place
             "--memory", self.docker_memory,
             "--cpus", str(self.docker_cpus),
             DOCKER_IMAGE,
@@ -228,7 +242,8 @@ class Worker:
         ]
 
         logger.info(f"Executing Claude CLI in Docker container")
-        logger.info(f"Docker script: {setup_script}")
+        logger.info(f"Host .claude dir: {claude_config_dir}")
+        logger.info(f"Docker script: {setup_script[:200]}...")
         logger.debug(f"Prompt (first 200 chars): {prompt[:200]}...")
 
         try:
