@@ -819,17 +819,47 @@ def get_config():
     return jsonify({})
 
 
-# VM status (optional)
-@main_bp.route("/vms")
-def get_vm_status():
-    """Get VM pool status."""
+# Worker status (Docker/VM)
+@main_bp.route("/workers")
+@main_bp.route("/vms")  # Legacy alias
+def get_worker_status():
+    """Get worker pool status (Docker or VM)."""
+    import subprocess
+
+    # Check Docker status
+    docker_status = {"available": False, "image_ready": False}
     try:
-        orchestrator = get_orchestrator()
-        if orchestrator.vm_pool:
-            return jsonify(orchestrator.vm_pool.get_status())
-    except Exception:
-        pass
-    return jsonify({"error": "VM pool not configured"})
+        result = subprocess.run(
+            ["docker", "version", "--format", "{{.Server.Version}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        docker_status["available"] = result.returncode == 0
+        docker_status["version"] = result.stdout.strip() if result.returncode == 0 else None
+
+        # Check if worker image exists
+        result = subprocess.run(
+            ["docker", "image", "inspect", "svengalibot-worker"],
+            capture_output=True,
+            timeout=5,
+        )
+        docker_status["image_ready"] = result.returncode == 0
+    except Exception as e:
+        docker_status["error"] = str(e)
+
+    # Load worker config
+    config_path = current_app.config["CONFIG_PATH"]
+    worker_mode = "local"
+    if config_path.exists():
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f) or {}
+        worker_mode = cfg.get("worker", {}).get("mode", "local")
+
+    return jsonify({
+        "mode": worker_mode,
+        "docker": docker_status,
+    })
 
 
 # ============================================================

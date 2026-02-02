@@ -10,6 +10,9 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+# Docker image name
+DOCKER_IMAGE = "svengalibot-worker"
+
 
 @dataclass
 class WorkerResult:
@@ -28,10 +31,16 @@ class Worker:
         workspace_dir: Path,
         ssh_host: Optional[str] = None,
         ssh_user: str = "vagrant",
+        use_docker: bool = False,
+        docker_memory: str = "4g",
+        docker_cpus: float = 2.0,
     ):
         self.workspace_dir = Path(workspace_dir)
         self.ssh_host = ssh_host
         self.ssh_user = ssh_user
+        self.use_docker = use_docker
+        self.docker_memory = docker_memory
+        self.docker_cpus = docker_cpus
 
     def _build_prompt(
         self,
@@ -164,6 +173,107 @@ class Worker:
                 diff="",
                 summary="",
                 error=str(e),
+            )
+
+    def execute_docker(
+        self,
+        chunk_spec: dict,
+        context: str,
+        guide: dict,
+        previous_feedback: Optional[str] = None,
+        on_output: Optional[Callable[[str], None]] = None,
+        baseline_commit: Optional[str] = None,
+    ) -> WorkerResult:
+        """Execute a chunk in a Docker container for isolation.
+
+        Args:
+            baseline_commit: If provided, diff against this commit.
+        """
+        prompt = self._build_prompt(chunk_spec, context, guide, previous_feedback)
+
+        # Build docker run command
+        cmd = [
+            "docker", "run",
+            "--rm",  # Remove container after exit
+            "-v", f"{self.workspace_dir.absolute()}:/workspace",
+            "--memory", self.docker_memory,
+            "--cpus", str(self.docker_cpus),
+            DOCKER_IMAGE,
+            "claude", "-p", "--dangerously-skip-permissions", prompt,
+        ]
+
+        logger.info(f"Executing Claude CLI in Docker container")
+        logger.debug(f"Prompt (first 200 chars): {prompt[:200]}...")
+
+        try:
+            if not baseline_commit:
+                baseline_commit = self._get_current_commit()
+            logger.info(f"Using baseline commit for diff: {baseline_commit[:8] if baseline_commit else 'none'}")
+
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+
+            logger.info("Waiting for Docker Claude to complete (max 10 minutes)...")
+
+            try:
+                output, _ = process.communicate(timeout=600)
+                logger.info(f"Docker Claude finished with exit code {process.returncode}")
+
+                if on_output and output:
+                    for i in range(0, len(output), 500):
+                        chunk = output[i:i+500]
+                        on_output(chunk)
+
+            except subprocess.TimeoutExpired:
+                logger.error("Docker Claude timed out after 10 minutes")
+                process.kill()
+                output, _ = process.communicate()
+                output = output or ""
+
+            # Get diff
+            diff = self._get_diff_since_commit(baseline_commit)
+            summary = self._extract_summary(output)
+
+            return WorkerResult(
+                success=process.returncode == 0,
+                output=output,
+                diff=diff,
+                summary=summary,
+                error=None if process.returncode == 0 else f"Exit code: {process.returncode}",
+            )
+
+        except Exception as e:
+            import traceback
+            logger.error(f"Worker execute_docker failed: {e}\n{traceback.format_exc()}")
+            return WorkerResult(
+                success=False,
+                output="",
+                diff="",
+                summary="",
+                error=str(e),
+            )
+
+    def execute(
+        self,
+        chunk_spec: dict,
+        context: str,
+        guide: dict,
+        previous_feedback: Optional[str] = None,
+        on_output: Optional[Callable[[str], None]] = None,
+        baseline_commit: Optional[str] = None,
+    ) -> WorkerResult:
+        """Execute a chunk using the configured method (local or Docker)."""
+        if self.use_docker:
+            return self.execute_docker(
+                chunk_spec, context, guide, previous_feedback, on_output, baseline_commit
+            )
+        else:
+            return self.execute_local(
+                chunk_spec, context, guide, previous_feedback, on_output, baseline_commit
             )
 
     def execute_streaming(
