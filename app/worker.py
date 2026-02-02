@@ -192,14 +192,15 @@ class Worker:
         claude_config_dir = Path.home() / ".claude"
 
         # Refresh OAuth token on host before Docker run
-        # This ensures the copied credentials are fresh
+        # Must make actual API call to trigger token refresh
         try:
             logger.info("Refreshing OAuth token on host...")
             subprocess.run(
-                ["claude", "--version"],
+                ["claude", "-p", "--dangerously-skip-permissions", "say ok"],
                 capture_output=True,
-                timeout=30,
+                timeout=60,
             )
+            logger.info("Token refreshed successfully")
         except Exception as e:
             logger.warning(f"Token refresh failed (continuing anyway): {e}")
 
