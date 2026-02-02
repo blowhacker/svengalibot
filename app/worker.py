@@ -200,7 +200,7 @@ class Worker:
             "docker", "run",
             "--rm",  # Remove container after exit
             "-v", f"{self.workspace_dir.absolute()}:/workspace",
-            "-v", f"{claude_config_dir}:/root/.claude:ro",  # Mount Claude auth (read-only)
+            "-v", f"{claude_config_dir}:/home/worker/.claude:ro",  # Mount Claude auth (read-only)
             "--memory", self.docker_memory,
             "--cpus", str(self.docker_cpus),
             DOCKER_IMAGE,
