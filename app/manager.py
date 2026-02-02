@@ -16,6 +16,11 @@ RETRY_DELAY_SECONDS = 5
 RETRY_BACKOFF_MULTIPLIER = 2
 
 
+class QuotaExhaustedException(Exception):
+    """Raised when API quota/billing is exhausted."""
+    pass
+
+
 class Manager:
     """Manager that uses ChatGPT for planning, review, and research."""
 
@@ -180,6 +185,17 @@ class Manager:
             except Exception as e:
                 last_error = e
                 error_str = str(e).lower()
+
+                # Check for quota/billing errors - these are NOT retryable
+                is_quota_error = any(term in error_str for term in [
+                    'quota', 'billing', 'insufficient_quota', 'exceeded your current quota',
+                    'usage limit', 'spending limit', 'out of credits', 'payment required',
+                    'account_deactivated', 'plan limit'
+                ])
+
+                if is_quota_error:
+                    logger.error(f"API quota exhausted: {e}")
+                    raise QuotaExhaustedException(f"OpenAI API quota exhausted: {e}")
 
                 # Check if this is a retryable error
                 is_retryable = any(term in error_str for term in [

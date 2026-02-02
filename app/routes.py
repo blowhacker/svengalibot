@@ -1161,7 +1161,28 @@ def _run_collaboration(project_name: str, task_id: str, app, orchestrator, proje
 
     except Exception as e:
         import traceback
+        from app.manager import QuotaExhaustedException
+
         error_msg = str(e)
+
+        # Handle quota exhaustion specially - pause instead of fail
+        if isinstance(e, QuotaExhaustedException):
+            task.status = ConvTaskStatus.PAUSED
+            task_key = f"{project_name}:{task_id}"
+            _paused_collab_tasks.add(task_key)
+            task.add_message(
+                role="system",
+                content="OpenAI API quota exhausted. Task paused - you can resume when quota resets.",
+                provider="system",
+            )
+            _save_collab_task_direct(project, task)
+
+            _broadcast_collab_event(project_name, task_id, {
+                "type": "task_paused",
+                "data": {"message": "OpenAI API quota exhausted. Task paused.", "quota_exhausted": True},
+            })
+            return
+
         task.status = ConvTaskStatus.FAILED
         task.error = error_msg
         task.add_message(
@@ -1379,6 +1400,11 @@ def _run_reviewer_turn(project, task: CollaborationTask, worker_output: dict, gu
             }
 
     except Exception as e:
+        from app.manager import QuotaExhaustedException
+        # Re-raise quota errors - don't continue without reviewer
+        if isinstance(e, QuotaExhaustedException):
+            raise
+
         logger.error(f"Reviewer failed: {e}")
         import traceback
         traceback.print_exc()
@@ -1600,3 +1626,185 @@ def old_tasks_list():
     return render_template("redirect.html",
         message="Tasks are now organized by project.",
         redirect_url="/"), 301
+
+
+# ============================================================
+# Setup Page Routes
+# ============================================================
+
+def _get_keys_path():
+    """Get path to keys file (stored separately from config)."""
+    return current_app.config["DATA_DIR"] / "keys.yaml"
+
+
+def _load_keys():
+    """Load API keys from keys file."""
+    keys_path = _get_keys_path()
+    if keys_path.exists():
+        with open(keys_path) as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def _save_keys(keys: dict):
+    """Save API keys to keys file."""
+    keys_path = _get_keys_path()
+    with open(keys_path, "w") as f:
+        yaml.dump(keys, f, default_flow_style=False)
+
+
+def _mask_key(key: str) -> str:
+    """Mask an API key for display."""
+    if not key or len(key) < 8:
+        return None
+    return key[:4] + "••••••••" + key[-4:]
+
+
+@main_bp.route("/setup")
+def setup_page():
+    """Setup page for configuring API keys and settings."""
+    return render_template("setup.html")
+
+
+@main_bp.route("/setup/json")
+def get_setup_data():
+    """Get current setup data (keys masked)."""
+    keys = _load_keys()
+    config_path = current_app.config["CONFIG_PATH"]
+
+    # Load config
+    config = {}
+    if config_path.exists():
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
+
+    # Return masked keys and config
+    return jsonify({
+        "keys": {
+            "openai": _mask_key(keys.get("openai_api_key")),
+            "anthropic": _mask_key(keys.get("anthropic_api_key")),
+            "google": _mask_key(keys.get("google_api_key")),
+        },
+        "config": {
+            "reviewer_model": config.get("manager", {}).get("model", "gpt-4o"),
+            "worker_mode": config.get("worker", {}).get("mode", "cli"),
+        },
+        "paths": {
+            "projects": str(current_app.config["PROJECTS_DIR"]),
+            "config": str(config_path),
+        }
+    })
+
+
+@main_bp.route("/setup/keys", methods=["POST"])
+def save_api_keys():
+    """Save API keys."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    # Load existing keys
+    keys = _load_keys()
+
+    # Update only provided keys
+    if "openai_api_key" in data and data["openai_api_key"]:
+        keys["openai_api_key"] = data["openai_api_key"]
+    if "anthropic_api_key" in data and data["anthropic_api_key"]:
+        keys["anthropic_api_key"] = data["anthropic_api_key"]
+    if "google_api_key" in data and data["google_api_key"]:
+        keys["google_api_key"] = data["google_api_key"]
+
+    _save_keys(keys)
+
+    # Update environment variables for current session
+    import os
+    if keys.get("openai_api_key"):
+        os.environ["OPENAI_API_KEY"] = keys["openai_api_key"]
+    if keys.get("anthropic_api_key"):
+        os.environ["ANTHROPIC_API_KEY"] = keys["anthropic_api_key"]
+    if keys.get("google_api_key"):
+        os.environ["GOOGLE_API_KEY"] = keys["google_api_key"]
+
+    return jsonify({"status": "saved"})
+
+
+@main_bp.route("/setup/config", methods=["POST"])
+def save_config():
+    """Save configuration settings."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    config_path = current_app.config["CONFIG_PATH"]
+
+    # Load existing config
+    config = {}
+    if config_path.exists():
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
+
+    # Update config
+    if "reviewer_model" in data:
+        config.setdefault("manager", {})["model"] = data["reviewer_model"]
+    if "worker_mode" in data:
+        config.setdefault("worker", {})["mode"] = data["worker_mode"]
+
+    # Save config
+    with open(config_path, "w") as f:
+        yaml.dump(config, f, default_flow_style=False)
+
+    return jsonify({"status": "saved"})
+
+
+@main_bp.route("/setup/test", methods=["POST"])
+def test_api_connections():
+    """Test API key connections."""
+    import os
+
+    keys = _load_keys()
+    results = {}
+
+    # Test OpenAI
+    openai_key = keys.get("openai_api_key") or os.environ.get("OPENAI_API_KEY")
+    if openai_key:
+        try:
+            import openai
+            client = openai.OpenAI(api_key=openai_key)
+            # Simple test - list models
+            client.models.list()
+            results["openai"] = True
+        except Exception as e:
+            results["openai"] = False
+            results["openai_error"] = str(e)
+
+    # Test Anthropic
+    anthropic_key = keys.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY")
+    if anthropic_key:
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=anthropic_key)
+            # Simple test - create a tiny message
+            client.messages.create(
+                model="claude-3-haiku-20240307",
+                max_tokens=10,
+                messages=[{"role": "user", "content": "hi"}]
+            )
+            results["anthropic"] = True
+        except Exception as e:
+            results["anthropic"] = False
+            results["anthropic_error"] = str(e)
+
+    # Test Google/Gemini
+    google_key = keys.get("google_api_key") or os.environ.get("GOOGLE_API_KEY")
+    if google_key:
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=google_key)
+            # Simple test - list models
+            list(genai.list_models())
+            results["google"] = True
+        except Exception as e:
+            results["google"] = False
+            results["google_error"] = str(e)
+
+    return jsonify(results)

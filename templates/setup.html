@@ -1,0 +1,430 @@
+{% extends "base.html" %}
+
+{% block title %}Setup - Svengalibot{% endblock %}
+
+{% block content %}
+<div class="setup-page">
+    <header class="setup-header">
+        <a href="/" class="back-link">&larr; Back to Projects</a>
+        <h1>Setup</h1>
+        <p class="setup-desc">Configure API keys and settings for Svengalibot.</p>
+    </header>
+
+    <div class="setup-sections">
+        <!-- API Keys Section -->
+        <section class="setup-section">
+            <h2>API Keys</h2>
+            <p class="section-hint">Keys are stored locally and never sent to external servers (except the respective APIs).</p>
+
+            <form id="api-keys-form">
+                <!-- OpenAI -->
+                <div class="key-field">
+                    <label for="openai-key">
+                        <span class="provider-icon">🧠</span>
+                        OpenAI API Key
+                    </label>
+                    <div class="key-input-row">
+                        <input type="password" id="openai-key" name="openai_api_key"
+                               placeholder="sk-..." autocomplete="off">
+                        <button type="button" class="btn-icon btn-toggle-visibility" data-target="openai-key">👁</button>
+                    </div>
+                    <span class="key-status" id="openai-status"></span>
+                    <p class="key-hint">Used for the reviewer/manager (GPT-4, etc.)</p>
+                </div>
+
+                <!-- Anthropic -->
+                <div class="key-field">
+                    <label for="anthropic-key">
+                        <span class="provider-icon">🤖</span>
+                        Anthropic API Key
+                    </label>
+                    <div class="key-input-row">
+                        <input type="password" id="anthropic-key" name="anthropic_api_key"
+                               placeholder="sk-ant-..." autocomplete="off">
+                        <button type="button" class="btn-icon btn-toggle-visibility" data-target="anthropic-key">👁</button>
+                    </div>
+                    <span class="key-status" id="anthropic-status"></span>
+                    <p class="key-hint">Used for Claude API (alternative to CLI)</p>
+                </div>
+
+                <!-- Google/Gemini -->
+                <div class="key-field">
+                    <label for="google-key">
+                        <span class="provider-icon">🔷</span>
+                        Google AI (Gemini) API Key
+                    </label>
+                    <div class="key-input-row">
+                        <input type="password" id="google-key" name="google_api_key"
+                               placeholder="AIza..." autocomplete="off">
+                        <button type="button" class="btn-icon btn-toggle-visibility" data-target="google-key">👁</button>
+                    </div>
+                    <span class="key-status" id="google-status"></span>
+                    <p class="key-hint">Used for Gemini models</p>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn-primary">Save Keys</button>
+                    <button type="button" id="btn-test-keys" class="btn-secondary">Test Connections</button>
+                </div>
+            </form>
+        </section>
+
+        <!-- Model Configuration -->
+        <section class="setup-section">
+            <h2>Model Configuration</h2>
+
+            <div class="config-field">
+                <label for="reviewer-model">Reviewer Model (OpenAI)</label>
+                <select id="reviewer-model" name="reviewer_model">
+                    <option value="gpt-4o">GPT-4o (recommended)</option>
+                    <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                    <option value="gpt-4">GPT-4</option>
+                    <option value="gpt-3.5-turbo">GPT-3.5 Turbo (faster, cheaper)</option>
+                    <option value="o1-preview">o1-preview (reasoning)</option>
+                </select>
+            </div>
+
+            <div class="config-field">
+                <label for="worker-mode">Worker Mode</label>
+                <select id="worker-mode" name="worker_mode">
+                    <option value="cli">Claude CLI (local)</option>
+                    <option value="api">Claude API</option>
+                    <option value="vm">Claude CLI (VM - isolated)</option>
+                </select>
+                <p class="key-hint">CLI mode uses locally installed Claude. VM mode runs in isolated environment.</p>
+            </div>
+
+            <div class="form-actions">
+                <button type="button" id="btn-save-config" class="btn-primary">Save Configuration</button>
+            </div>
+        </section>
+
+        <!-- Data & Storage -->
+        <section class="setup-section">
+            <h2>Data & Storage</h2>
+
+            <div class="config-field">
+                <label>Projects Directory</label>
+                <div class="readonly-value" id="projects-dir"></div>
+            </div>
+
+            <div class="config-field">
+                <label>Config File</label>
+                <div class="readonly-value" id="config-path"></div>
+            </div>
+        </section>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Load current settings
+async function loadSettings() {
+    try {
+        const response = await fetch('/setup/json');
+        const data = await response.json();
+
+        // Populate key fields (masked)
+        if (data.keys?.openai) {
+            document.getElementById('openai-key').placeholder = maskKey(data.keys.openai);
+            document.getElementById('openai-status').textContent = '✓ Configured';
+            document.getElementById('openai-status').className = 'key-status status-ok';
+        }
+        if (data.keys?.anthropic) {
+            document.getElementById('anthropic-key').placeholder = maskKey(data.keys.anthropic);
+            document.getElementById('anthropic-status').textContent = '✓ Configured';
+            document.getElementById('anthropic-status').className = 'key-status status-ok';
+        }
+        if (data.keys?.google) {
+            document.getElementById('google-key').placeholder = maskKey(data.keys.google);
+            document.getElementById('google-status').textContent = '✓ Configured';
+            document.getElementById('google-status').className = 'key-status status-ok';
+        }
+
+        // Populate config
+        if (data.config?.reviewer_model) {
+            document.getElementById('reviewer-model').value = data.config.reviewer_model;
+        }
+        if (data.config?.worker_mode) {
+            document.getElementById('worker-mode').value = data.config.worker_mode;
+        }
+
+        // Paths
+        document.getElementById('projects-dir').textContent = data.paths?.projects || 'Not set';
+        document.getElementById('config-path').textContent = data.paths?.config || 'Not set';
+
+    } catch (e) {
+        console.error('Failed to load settings:', e);
+    }
+}
+
+function maskKey(key) {
+    if (!key || key.length < 8) return '••••••••';
+    return key.substring(0, 4) + '••••••••' + key.substring(key.length - 4);
+}
+
+// Toggle password visibility
+document.querySelectorAll('.btn-toggle-visibility').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const input = document.getElementById(btn.dataset.target);
+        if (input.type === 'password') {
+            input.type = 'text';
+            btn.textContent = '🔒';
+        } else {
+            input.type = 'password';
+            btn.textContent = '👁';
+        }
+    });
+});
+
+// Save keys
+document.getElementById('api-keys-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const keys = {};
+    const openaiKey = document.getElementById('openai-key').value.trim();
+    const anthropicKey = document.getElementById('anthropic-key').value.trim();
+    const googleKey = document.getElementById('google-key').value.trim();
+
+    if (openaiKey) keys.openai_api_key = openaiKey;
+    if (anthropicKey) keys.anthropic_api_key = anthropicKey;
+    if (googleKey) keys.google_api_key = googleKey;
+
+    if (Object.keys(keys).length === 0) {
+        alert('No keys entered');
+        return;
+    }
+
+    try {
+        const response = await fetch('/setup/keys', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(keys)
+        });
+
+        if (response.ok) {
+            alert('Keys saved successfully');
+            // Clear inputs and reload
+            document.getElementById('openai-key').value = '';
+            document.getElementById('anthropic-key').value = '';
+            document.getElementById('google-key').value = '';
+            loadSettings();
+        } else {
+            const error = await response.json();
+            alert('Failed to save: ' + (error.error || 'Unknown error'));
+        }
+    } catch (e) {
+        alert('Failed to save keys: ' + e.message);
+    }
+});
+
+// Save config
+document.getElementById('btn-save-config').addEventListener('click', async () => {
+    const config = {
+        reviewer_model: document.getElementById('reviewer-model').value,
+        worker_mode: document.getElementById('worker-mode').value,
+    };
+
+    try {
+        const response = await fetch('/setup/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config)
+        });
+
+        if (response.ok) {
+            alert('Configuration saved');
+        } else {
+            const error = await response.json();
+            alert('Failed to save: ' + (error.error || 'Unknown error'));
+        }
+    } catch (e) {
+        alert('Failed to save config: ' + e.message);
+    }
+});
+
+// Test connections
+document.getElementById('btn-test-keys').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-test-keys');
+    btn.disabled = true;
+    btn.textContent = 'Testing...';
+
+    try {
+        const response = await fetch('/setup/test', { method: 'POST' });
+        const results = await response.json();
+
+        // Update status indicators
+        if (results.openai !== undefined) {
+            const status = document.getElementById('openai-status');
+            status.textContent = results.openai ? '✓ Connected' : '✗ Failed';
+            status.className = 'key-status ' + (results.openai ? 'status-ok' : 'status-error');
+        }
+        if (results.anthropic !== undefined) {
+            const status = document.getElementById('anthropic-status');
+            status.textContent = results.anthropic ? '✓ Connected' : '✗ Failed';
+            status.className = 'key-status ' + (results.anthropic ? 'status-ok' : 'status-error');
+        }
+        if (results.google !== undefined) {
+            const status = document.getElementById('google-status');
+            status.textContent = results.google ? '✓ Connected' : '✗ Failed';
+            status.className = 'key-status ' + (results.google ? 'status-ok' : 'status-error');
+        }
+
+    } catch (e) {
+        alert('Test failed: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Test Connections';
+    }
+});
+
+// Initialize
+loadSettings();
+</script>
+
+<style>
+.setup-page {
+    max-width: 700px;
+    margin: 0 auto;
+    padding: 1rem;
+}
+
+.setup-header {
+    margin-bottom: 2rem;
+}
+
+.setup-header h1 {
+    margin: 0.5rem 0;
+}
+
+.setup-desc {
+    color: var(--text-muted);
+}
+
+.setup-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.setup-section {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+}
+
+.setup-section h2 {
+    margin-bottom: 0.5rem;
+    font-size: 1.1rem;
+}
+
+.section-hint {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    margin-bottom: 1rem;
+}
+
+.key-field {
+    margin-bottom: 1.25rem;
+}
+
+.key-field label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+}
+
+.provider-icon {
+    font-size: 1.1rem;
+}
+
+.key-input-row {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.key-input-row input {
+    flex: 1;
+    padding: 0.6rem 0.8rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: 'Fira Code', monospace;
+    font-size: 0.85rem;
+}
+
+.key-input-row input:focus {
+    outline: none;
+    border-color: var(--primary);
+}
+
+.btn-toggle-visibility {
+    padding: 0.5rem 0.75rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.key-status {
+    display: inline-block;
+    font-size: 0.75rem;
+    margin-top: 0.25rem;
+}
+
+.status-ok {
+    color: var(--success);
+}
+
+.status-error {
+    color: var(--danger);
+}
+
+.key-hint {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin-top: 0.25rem;
+}
+
+.config-field {
+    margin-bottom: 1rem;
+}
+
+.config-field label {
+    display: block;
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+}
+
+.config-field select {
+    width: 100%;
+    padding: 0.6rem 0.8rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 0.9rem;
+}
+
+.readonly-value {
+    padding: 0.6rem 0.8rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: 'Fira Code', monospace;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.form-actions {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+</style>
+{% endblock %}
