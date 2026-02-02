@@ -486,16 +486,16 @@ document.getElementById('btn-refresh-files').addEventListener('click', loadFileT
 
 // Delete project
 document.getElementById('btn-delete-project').addEventListener('click', async () => {
-    const deleteFiles = confirm('Delete project "' + projectName + '"?\n\nClick OK to remove project from Svengalibot.\nClick Cancel to keep it.');
-    if (deleteFiles === null) return; // User cancelled
+    const confirmFirst = confirm('Delete project "' + projectName + '"?\n\nClick OK to remove project from Svengalibot.\nClick Cancel to keep it.');
+    if (!confirmFirst) return; // User cancelled
 
-    const confirmDelete = confirm('Also delete all project files?\n\nOK = Delete everything\nCancel = Keep files, only remove from Svengalibot');
+    const deleteFiles = confirm('Also delete all project files?\n\nOK = Delete everything\nCancel = Keep files, only remove from Svengalibot');
 
     try {
         const response = await fetch(`/project/${projectName}`, {
             method: 'DELETE',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ delete_files: confirmDelete }),
+            body: JSON.stringify({ delete_files: deleteFiles }),
         });
 
         if (response.ok) {
