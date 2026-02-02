@@ -339,7 +339,7 @@ function connectStream() {
 
 function handleStreamEvent(data) {
     switch (data.type) {
-        case 'state':
+        case 'state': {
             // Throttle state updates to max once per 500ms
             const now = Date.now();
             if (data.task && (now - lastStateUpdate > 500)) {
@@ -347,8 +347,9 @@ function handleStreamEvent(data) {
                 updateUI(data.task);
             }
             break;
+        }
 
-        case 'message':
+        case 'message': {
             // New complete message
             const msgRole = data.data?.role || data.data?.provider;
 
@@ -362,6 +363,7 @@ function handleStreamEvent(data) {
                 appendMessage(data.data);
             }
             break;
+        }
 
         case 'message_chunk':
             // Streaming chunk - append to last message
@@ -374,7 +376,7 @@ function handleStreamEvent(data) {
             startStreamingMessage('worker', 'claude');
             break;
 
-        case 'chunk_output':
+        case 'chunk_output': {
             // Worker output streaming - throttle to prevent UI lock
             const now = Date.now();
             pendingChunkContent += (data.data?.content || '');
@@ -390,6 +392,7 @@ function handleStreamEvent(data) {
                 }
             }
             break;
+        }
 
         case 'chunk_reviewing':
             finalizeStreamingMessage();
