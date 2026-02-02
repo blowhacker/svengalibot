@@ -203,10 +203,10 @@ class Worker:
 
         # Build docker run command
         # Copy auth files from host, preserving container's MCP config
+        # Note: credentials file has a leading dot (.credentials.json)
         setup_cmd = (
-            "cp -n /host-claude/settings.json /home/worker/.claude/ 2>/dev/null; "
-            "cp -n /host-claude/credentials.json /home/worker/.claude/ 2>/dev/null; "
-            "cp -rn /host-claude/auth* /home/worker/.claude/ 2>/dev/null; "
+            "cp /host-claude/.credentials.json /home/worker/.claude/ 2>/dev/null; "
+            "cp /host-claude/settings.json /home/worker/.claude/ 2>/dev/null; "
             "claude -p --dangerously-skip-permissions \"$(cat /tmp/prompt.txt)\""
         )
 
