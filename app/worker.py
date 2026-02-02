@@ -1,9 +1,12 @@
 """Claude CLI worker for executing coding tasks."""
 
+import base64
+import json
 import logging
 import subprocess
 import threading
 import queue
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Callable, Iterator
 from dataclasses import dataclass
@@ -188,7 +191,6 @@ class Worker:
         prompt = self._build_prompt(chunk_spec, context, guide, previous_feedback)
 
         # Get Claude auth directory
-        import os
         claude_config_dir = Path.home() / ".claude"
 
         # Refresh OAuth token on host before Docker run
@@ -203,29 +205,58 @@ class Worker:
             # Ensure credentials file is flushed to disk
             subprocess.run(["sync"], capture_output=True)
             logger.info("Token refreshed successfully")
+
+            # Debug: show host file details
+            cred_file = claude_config_dir / ".credentials.json"
+            if cred_file.exists():
+                stat = cred_file.stat()
+                logger.info(f"Host credentials file: {cred_file}")
+                logger.info(f"Host credentials mtime: {stat.st_mtime} ({datetime.fromtimestamp(stat.st_mtime)})")
+                # Read and log expiresAt
+                try:
+                    with open(cred_file) as f:
+                        creds = json.load(f)
+                    expires = creds.get("claudeAiOauth", {}).get("expiresAt")
+                    logger.info(f"Host credentials expiresAt: {expires}")
+                except Exception as e:
+                    logger.warning(f"Could not read host credentials: {e}")
+            else:
+                logger.error(f"Host credentials file NOT FOUND: {cred_file}")
         except Exception as e:
             logger.warning(f"Token refresh failed (continuing anyway): {e}")
 
+        # Read credentials directly in Python to avoid Docker mount caching issues
+        cred_file = claude_config_dir / ".credentials.json"
+        settings_file = claude_config_dir / "settings.json"
+
+        creds_b64 = ""
+        settings_b64 = ""
+        try:
+            if cred_file.exists():
+                creds_content = cred_file.read_text()
+                creds_b64 = base64.b64encode(creds_content.encode()).decode()
+                logger.info(f"Read credentials ({len(creds_content)} bytes)")
+                # Log expiresAt for debugging
+                try:
+                    creds_data = json.loads(creds_content)
+                    expires = creds_data.get("claudeAiOauth", {}).get("expiresAt")
+                    logger.info(f"Credentials expiresAt: {expires}")
+                except:
+                    pass
+            if settings_file.exists():
+                settings_b64 = base64.b64encode(settings_file.read_text().encode()).decode()
+        except Exception as e:
+            logger.error(f"Failed to read credentials: {e}")
+
         # Build docker run command
-        # Mount host's .claude to /host-claude, then copy auth files (overwrite any existing)
-        # Note: We use cat|tee instead of cp to handle permission issues with different UIDs
+        # Pass credentials as base64 env vars to avoid mount caching issues
         setup_script = (
-            "cat > /tmp/prompt.txt; "
-            "echo '=== Debug: Docker worker user ==='; "
-            "id; "
-            "echo '=== Debug: Container .claude BEFORE copy ==='; "
-            "ls -la /home/worker/.claude/ 2>&1; "
-            "echo '=== Debug: Host mount contents ==='; "
-            "ls -la /host-claude/ 2>&1; "
-            "echo '=== Debug: Host credentials (first 100 chars) ==='; "
-            "head -c 100 /host-claude/.credentials.json 2>&1; echo; "
-            "echo '=== Copying credentials ==='; "
-            "cat /host-claude/.credentials.json > /home/worker/.claude/.credentials.json 2>&1 && echo 'OK' || echo 'FAILED'; "
-            "cat /host-claude/settings.json > /home/worker/.claude/settings.json 2>&1 && echo 'settings OK' || echo 'settings FAILED'; "
+            "echo $CREDS_B64 | base64 -d > /home/worker/.claude/.credentials.json; "
+            "echo $SETTINGS_B64 | base64 -d > /home/worker/.claude/settings.json 2>/dev/null || true; "
             "echo '=== Credentials expiresAt ==='; "
             "grep -o 'expiresAt\":[0-9]*' /home/worker/.claude/.credentials.json | head -1; "
             "echo '=== Running Claude ==='; "
-            "cat /tmp/prompt.txt | claude -p --dangerously-skip-permissions"
+            "claude -p --dangerously-skip-permissions"
         )
 
         cmd = [
@@ -233,8 +264,9 @@ class Worker:
             "--rm",  # Remove container after exit
             "-i",  # Keep stdin open for prompt
             "-v", f"{self.workspace_dir.absolute()}:/workspace",
-            "-v", f"{claude_config_dir}:/host-claude:ro",  # Mount host auth to temp location
-            "-e", "HOME=/home/worker",  # Ensure Claude looks in right place
+            "-e", "HOME=/home/worker",
+            "-e", f"CREDS_B64={creds_b64}",
+            "-e", f"SETTINGS_B64={settings_b64}",
             "--memory", self.docker_memory,
             "--cpus", str(self.docker_cpus),
             DOCKER_IMAGE,
