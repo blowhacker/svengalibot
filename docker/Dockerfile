@@ -14,8 +14,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Claude CLI
-RUN curl -fsSL https://claude.ai/install.sh | sh || \
-    npm install -g @anthropic-ai/claude-cli
+RUN npm install -g @anthropic-ai/claude-code
 
 # Add claude to path
 ENV PATH="/root/.claude/bin:$PATH"

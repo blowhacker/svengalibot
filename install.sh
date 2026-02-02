@@ -143,7 +143,8 @@ install_claude_cli() {
         esac
     fi
 
-    npm install -g @anthropic-ai/claude-code
+    npm install -g @anthropic-ai/claude-code 2>/dev/null || \
+        warn "Claude CLI install via npm failed - install manually: https://claude.ai/download"
     success "Claude CLI installed"
 }
 
