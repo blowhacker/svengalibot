@@ -200,16 +200,18 @@ class Worker:
                 capture_output=True,
                 timeout=60,
             )
+            # Ensure credentials file is flushed to disk
+            subprocess.run(["sync"], capture_output=True)
             logger.info("Token refreshed successfully")
         except Exception as e:
             logger.warning(f"Token refresh failed (continuing anyway): {e}")
 
         # Build docker run command
-        # Mount host's .claude to /host-claude, then copy auth files while preserving container's MCP config
+        # Mount host's .claude to /host-claude, then copy auth files (overwrite any existing)
         setup_script = (
             "cat > /tmp/prompt.txt; "
-            "cp -n /host-claude/.credentials.json /home/worker/.claude/ 2>/dev/null; "
-            "cp -n /host-claude/settings.json /home/worker/.claude/ 2>/dev/null; "
+            "cp /host-claude/.credentials.json /home/worker/.claude/ 2>/dev/null; "
+            "cp /host-claude/settings.json /home/worker/.claude/ 2>/dev/null; "
             "cat /tmp/prompt.txt | claude -p --dangerously-skip-permissions"
         )
 
