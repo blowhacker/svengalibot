@@ -29,15 +29,11 @@ class Worker:
     def __init__(
         self,
         workspace_dir: Path,
-        ssh_host: Optional[str] = None,
-        ssh_user: str = "vagrant",
         use_docker: bool = False,
         docker_memory: str = "4g",
         docker_cpus: float = 2.0,
     ):
         self.workspace_dir = Path(workspace_dir)
-        self.ssh_host = ssh_host
-        self.ssh_user = ssh_user
         self.use_docker = use_docker
         self.docker_memory = docker_memory
         self.docker_cpus = docker_cpus
@@ -292,103 +288,6 @@ class Worker:
                 chunk_spec, context, guide, previous_feedback, on_output, baseline_commit
             )
 
-    def execute_streaming(
-        self,
-        chunk_spec: dict,
-        context: str,
-        guide: dict,
-        previous_feedback: Optional[str] = None,
-    ) -> Iterator[str]:
-        """Execute a chunk and yield output line by line."""
-        prompt = self._build_prompt(chunk_spec, context, guide, previous_feedback)
-
-        if self.ssh_host:
-            cmd = [
-                "ssh",
-                f"{self.ssh_user}@{self.ssh_host}",
-                f"cd /workspace && claude '{prompt}'",
-            ]
-        else:
-            cmd = ["claude", prompt]
-
-        process = subprocess.Popen(
-            cmd,
-            cwd=self.workspace_dir if not self.ssh_host else None,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-
-        for line in iter(process.stdout.readline, ""):
-            yield line
-
-        process.wait()
-        yield f"\n[Process exited with code {process.returncode}]\n"
-
-    def execute_ssh(
-        self,
-        chunk_spec: dict,
-        context: str,
-        guide: dict,
-        previous_feedback: Optional[str] = None,
-        on_output: Optional[Callable[[str], None]] = None,
-    ) -> WorkerResult:
-        """Execute a chunk via SSH on a remote VM."""
-        if not self.ssh_host:
-            raise ValueError("SSH host not configured")
-
-        prompt = self._build_prompt(chunk_spec, context, guide, previous_feedback)
-
-        # Escape prompt for shell
-        escaped_prompt = prompt.replace("'", "'\"'\"'")
-
-        cmd = [
-            "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            f"{self.ssh_user}@{self.ssh_host}",
-            f"cd /workspace && claude --print '{escaped_prompt}'",
-        ]
-
-        try:
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-
-            output_lines = []
-            for line in iter(process.stdout.readline, ""):
-                output_lines.append(line)
-                if on_output:
-                    on_output(line)
-
-            process.wait()
-            output = "".join(output_lines)
-
-            # Get diff from remote
-            diff = self._get_remote_diff()
-
-            summary = self._extract_summary(output)
-
-            return WorkerResult(
-                success=process.returncode == 0,
-                output=output,
-                diff=diff,
-                summary=summary,
-                error=None if process.returncode == 0 else f"Exit code: {process.returncode}",
-            )
-
-        except Exception as e:
-            return WorkerResult(
-                success=False,
-                output="",
-                diff="",
-                summary="",
-                error=str(e),
-            )
 
     def _get_current_commit(self) -> str:
         """Get the current HEAD commit hash."""
@@ -462,25 +361,6 @@ class Worker:
             return "\n".join(diff_parts)
         except Exception as e:
             logger.error(f"Failed to get diff: {e}")
-            return ""
-
-    def _get_remote_diff(self) -> str:
-        """Get git diff from remote VM."""
-        if not self.ssh_host:
-            return ""
-
-        try:
-            result = subprocess.run(
-                [
-                    "ssh",
-                    f"{self.ssh_user}@{self.ssh_host}",
-                    "cd /workspace && git diff HEAD",
-                ],
-                capture_output=True,
-                text=True,
-            )
-            return result.stdout
-        except Exception:
             return ""
 
     def _extract_summary(self, output: str) -> str:

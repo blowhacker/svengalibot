@@ -38,7 +38,7 @@ def get_state_manager_for_project(project_name: str):
 
 
 def get_state_manager():
-    """Get state manager instance (legacy - uses default tasks dir)."""
+    """Get state manager instance."""
     from app.state import StateManager
     return StateManager(current_app.config["TASKS_DIR"])
 
@@ -821,9 +821,9 @@ def get_config():
 
 # Worker status (Docker/VM)
 @main_bp.route("/workers")
-@main_bp.route("/vms")  # Legacy alias
+@main_bp.route("/workers")
 def get_worker_status():
-    """Get worker pool status (Docker or VM)."""
+    """Get worker pool status (Docker)."""
     import subprocess
 
     # Check Docker status

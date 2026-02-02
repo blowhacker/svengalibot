@@ -76,12 +76,6 @@
                 <p class="empty-state">No collaborations yet. Start one above.</p>
             </div>
         </section>
-
-        <!-- Legacy Tasks (if any) -->
-        <section class="task-list" id="legacy-tasks-section" style="display:none">
-            <h2>Legacy Tasks</h2>
-            <div id="legacy-tasks-container"></div>
-        </section>
     </div>
 </div>
 {% endblock %}
@@ -215,19 +209,6 @@ async function loadProject() {
 
     // Load collaboration tasks
     await loadCollabTasks();
-
-    // Load legacy tasks if any
-    if (data.tasks && data.tasks.length > 0) {
-        document.getElementById('legacy-tasks-section').style.display = 'block';
-        const container = document.getElementById('legacy-tasks-container');
-        container.innerHTML = data.tasks.map(task => `
-            <a href="/project/${projectName}/task/${task.id}" class="task-card">
-                <span class="status status-${task.status}">${task.status}</span>
-                <span class="description">${escapeHtml(task.description.substring(0, 100))}${task.description.length > 100 ? '...' : ''}</span>
-                <span class="progress">${task.completed_chunks || 0}/${task.total_chunks || 0} chunks</span>
-            </a>
-        `).join('');
-    }
 }
 
 async function loadCollabTasks() {

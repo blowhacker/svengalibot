@@ -788,12 +788,6 @@ class Orchestrator:
 
         return "paused"
 
-    def _execute_chunk_legacy(self, project: Project, task_id: str, chunk_id: str) -> bool:
-        """Legacy execution method - kept for reference but no longer used."""
-        # This is the old hardcoded implementation
-        # Kept here in case we need to reference it
-        pass
-
     def _commit_chunk(self, workspace: Path, message: str):
         """Commit changes in the project workspace."""
         import subprocess

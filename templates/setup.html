@@ -89,10 +89,10 @@
                 <label for="worker-mode">Worker Mode</label>
                 <select id="worker-mode" name="worker_mode">
                     <option value="cli">Claude CLI (local)</option>
+                    <option value="docker">Claude CLI (Docker - isolated)</option>
                     <option value="api">Claude API</option>
-                    <option value="vm">Claude CLI (VM - isolated)</option>
                 </select>
-                <p class="key-hint">CLI mode uses locally installed Claude. VM mode runs in isolated environment.</p>
+                <p class="key-hint">CLI runs locally. Docker runs in isolated container.</p>
             </div>
 
             <div class="form-actions">
