@@ -113,11 +113,15 @@ class DockerPool:
 
         timeout = timeout or self.config.timeout
 
+        # Get Claude auth directory
+        claude_config_dir = Path.home() / ".claude"
+
         # Build docker run command
         cmd = [
             "docker", "run",
             "--rm",  # Remove container after exit
             "-v", f"{workspace_dir.absolute()}:/workspace",
+            "-v", f"{claude_config_dir}:/root/.claude:ro",  # Mount Claude auth (read-only)
             "--memory", self.config.memory_limit,
             "--cpus", str(self.config.cpu_limit),
             "--network", "none",  # No network access for safety
@@ -169,10 +173,14 @@ class DockerPool:
 
         timeout = timeout or self.config.timeout
 
+        # Get Claude auth directory
+        claude_config_dir = Path.home() / ".claude"
+
         cmd = [
             "docker", "run",
             "--rm",
             "-v", f"{workspace_dir.absolute()}:/workspace",
+            "-v", f"{claude_config_dir}:/root/.claude:ro",  # Mount Claude auth
             "--memory", self.config.memory_limit,
             "--cpus", str(self.config.cpu_limit),
             "--network", "none",
