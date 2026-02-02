@@ -29,7 +29,7 @@
                         <button type="button" class="btn-icon btn-toggle-visibility" data-target="openai-key">👁</button>
                     </div>
                     <span class="key-status" id="openai-status"></span>
-                    <p class="key-hint">Used for the reviewer/manager (GPT-4, etc.)</p>
+                    <p class="key-hint">Used for the reviewer/manager (GPT-5.2, etc.)</p>
                 </div>
 
                 <!-- Anthropic -->
@@ -76,11 +76,12 @@
             <div class="config-field">
                 <label for="reviewer-model">Reviewer Model (OpenAI)</label>
                 <select id="reviewer-model" name="reviewer_model">
-                    <option value="gpt-4o">GPT-4o (recommended)</option>
-                    <option value="gpt-4-turbo">GPT-4 Turbo</option>
-                    <option value="gpt-4">GPT-4</option>
-                    <option value="gpt-3.5-turbo">GPT-3.5 Turbo (faster, cheaper)</option>
-                    <option value="o1-preview">o1-preview (reasoning)</option>
+                    <option value="gpt-5.2">GPT-5.2 (recommended)</option>
+                    <option value="gpt-5.2-mini">GPT-5.2 Mini (faster, cheaper)</option>
+                    <option value="gpt-5">GPT-5</option>
+                    <option value="o3">o3 (reasoning)</option>
+                    <option value="o3-mini">o3-mini (reasoning, faster)</option>
+                    <option value="gpt-4o">GPT-4o (legacy)</option>
                 </select>
             </div>
 
