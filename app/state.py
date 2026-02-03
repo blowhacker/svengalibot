@@ -344,6 +344,8 @@ class Project:
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     description: str = ""
     default_flow: Optional[FlowDefinition] = None  # Default flow for new tasks
+    mounts: list[dict] = field(default_factory=list)
+    # Each mount: {"host": "/path/on/host", "container": "/data/myfile.db", "readonly": true}
 
     def to_dict(self):
         return {
@@ -352,6 +354,7 @@ class Project:
             "created_at": self.created_at,
             "description": self.description,
             "default_flow": self.default_flow.to_dict() if self.default_flow else None,
+            "mounts": self.mounts,
         }
 
     @classmethod
@@ -363,6 +366,8 @@ class Project:
             data["default_flow"] = FlowDefinition.from_dict(data["default_flow"])
         else:
             data["default_flow"] = None
+        # Backwards compatibility: mounts may not exist
+        data.setdefault("mounts", [])
         return cls(**data)
 
     @property

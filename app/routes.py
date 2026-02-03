@@ -277,6 +277,40 @@ def update_project_flow(project_name):
     return jsonify({"status": "updated", "flow": flow.to_dict()})
 
 
+@main_bp.route("/project/<project_name>/mounts", methods=["PUT"])
+def update_project_mounts(project_name):
+    """Update mounts for a project."""
+    data = request.get_json()
+    if data is None:
+        return jsonify({"error": "Mount data required"}), 400
+
+    mounts = data.get("mounts", [])
+
+    # Validate mount entries
+    errors = []
+    for i, mount in enumerate(mounts):
+        if not mount.get("host"):
+            errors.append(f"Mount {i+1}: host path is required")
+        if not mount.get("container"):
+            errors.append(f"Mount {i+1}: container path is required")
+
+    if errors:
+        return jsonify({"error": "Validation failed", "details": errors}), 400
+
+    # Normalize: ensure readonly field exists
+    for mount in mounts:
+        mount.setdefault("readonly", True)
+
+    pm = get_project_manager()
+    project = pm.get_project(project_name)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+
+    pm.update_project(project_name, mounts=mounts)
+
+    return jsonify({"status": "updated", "mounts": mounts})
+
+
 # Task CRUD
 @main_bp.route("/project/<project_name>/task", methods=["POST"])
 def create_task(project_name):
@@ -1493,6 +1527,7 @@ Be substantive and make real progress each iteration.""",
         use_docker=use_docker,
         docker_memory=docker_config.get("memory", "4g") if use_docker else "4g",
         docker_cpus=docker_config.get("cpus", 2.0) if use_docker else 2.0,
+        mounts=getattr(project, 'mounts', []) if use_docker else [],
     )
     output_buffer = []
     last_broadcast = [0]  # Use list to allow mutation in closure

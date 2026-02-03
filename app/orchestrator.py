@@ -619,7 +619,7 @@ class Orchestrator:
             },
         ))
 
-        worker = Worker(project.path)
+        worker = Worker(project.path, mounts=getattr(project, 'mounts', []))
         output_buffer = []
 
         def on_output(line: str):

@@ -35,11 +35,13 @@ class Worker:
         use_docker: bool = False,
         docker_memory: str = "4g",
         docker_cpus: float = 2.0,
+        mounts: list[dict] = None,
     ):
         self.workspace_dir = Path(workspace_dir)
         self.use_docker = use_docker
         self.docker_memory = docker_memory
         self.docker_cpus = docker_cpus
+        self.mounts = mounts or []
 
     def _build_prompt(
         self,
@@ -67,6 +69,12 @@ class Worker:
 
         if context:
             parts.append(f"\n## Context\n{context}")
+
+        if self.mounts:
+            parts.append("\n## Available Data Mounts")
+            for m in self.mounts:
+                mode = "read-only" if m.get("readonly", True) else "read-write"
+                parts.append(f"- `{m['container']}` ({mode})")
 
         if previous_feedback:
             parts.append(f"\n## Previous Attempt Feedback\n{previous_feedback}")
@@ -269,9 +277,17 @@ class Worker:
             "-e", f"SETTINGS_B64={settings_b64}",
             "--memory", self.docker_memory,
             "--cpus", str(self.docker_cpus),
+        ]
+
+        # Add user-configured mounts
+        for mount in self.mounts:
+            mode = "ro" if mount.get("readonly", True) else "rw"
+            cmd.extend(["-v", f"{mount['host']}:{mount['container']}:{mode}"])
+
+        cmd.extend([
             DOCKER_IMAGE,
             "bash", "-c", setup_script,
-        ]
+        ])
 
         logger.info(f"Executing Claude CLI in Docker container")
         logger.info(f"Host .claude dir: {claude_config_dir}")

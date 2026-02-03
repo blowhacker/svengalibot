@@ -39,6 +39,16 @@
             <div id="file-viewer-markdown" class="markdown-body file-markdown-view" style="display:none"></div>
         </section>
 
+        <!-- Data Mounts -->
+        <section class="mounts-section">
+            <h2>Data Mounts</h2>
+            <p class="section-hint">Mount host paths into the Docker container. Useful for large data files Claude needs to access.</p>
+            <div id="mounts-list"></div>
+            <button id="btn-add-mount" class="btn-secondary btn-small">+ Add Mount</button>
+            <button id="btn-save-mounts" class="btn-primary btn-small" style="margin-left: 0.5rem; display: none;">Save Mounts</button>
+            <span id="mounts-status" class="save-status"></span>
+        </section>
+
         <!-- New Task -->
         <section class="new-task collab-section">
             <h2>New Task</h2>
@@ -227,9 +237,97 @@ async function loadProject() {
     const data = await response.json();
     document.getElementById('project-path').textContent = data.path;
 
+    // Load mounts
+    projectMounts = data.mounts || [];
+    renderMounts();
+
     // Load collaboration tasks
     await loadCollabTasks();
 }
+
+// Mount management
+let projectMounts = [];
+
+function renderMounts() {
+    const container = document.getElementById('mounts-list');
+    const saveBtn = document.getElementById('btn-save-mounts');
+
+    if (projectMounts.length === 0) {
+        container.innerHTML = '<p class="empty-state">No mounts configured. Docker containers will only have access to the project workspace.</p>';
+        saveBtn.style.display = 'none';
+        return;
+    }
+
+    saveBtn.style.display = 'inline-block';
+    container.innerHTML = projectMounts.map((mount, i) => `
+        <div class="mount-row" data-index="${i}">
+            <input type="text" class="mount-input mount-host" placeholder="/host/path/to/file.db" value="${escapeHtml(mount.host || '')}" title="Host path">
+            <span class="mount-arrow">&rarr;</span>
+            <input type="text" class="mount-input mount-container" placeholder="/data/file.db" value="${escapeHtml(mount.container || '')}" title="Container path">
+            <label class="mount-readonly-label">
+                <input type="checkbox" class="mount-readonly" ${mount.readonly !== false ? 'checked' : ''}>
+                <span>Read-only</span>
+            </label>
+            ${!mount.readonly && mount.readonly !== undefined ? '<span class="mount-warning" title="Read-write mounts allow the container to modify host files">&#9888;</span>' : ''}
+            <button class="btn-icon mount-remove" title="Remove mount">&times;</button>
+        </div>
+    `).join('');
+
+    // Attach listeners
+    container.querySelectorAll('.mount-row').forEach(row => {
+        const idx = parseInt(row.dataset.index);
+        row.querySelector('.mount-host').addEventListener('input', (e) => {
+            projectMounts[idx].host = e.target.value;
+        });
+        row.querySelector('.mount-container').addEventListener('input', (e) => {
+            projectMounts[idx].container = e.target.value;
+        });
+        row.querySelector('.mount-readonly').addEventListener('change', (e) => {
+            projectMounts[idx].readonly = e.target.checked;
+            renderMounts();
+        });
+        row.querySelector('.mount-remove').addEventListener('click', () => {
+            projectMounts.splice(idx, 1);
+            renderMounts();
+        });
+    });
+}
+
+document.getElementById('btn-add-mount').addEventListener('click', () => {
+    projectMounts.push({ host: '', container: '', readonly: true });
+    renderMounts();
+});
+
+document.getElementById('btn-save-mounts').addEventListener('click', async () => {
+    const statusEl = document.getElementById('mounts-status');
+    statusEl.textContent = 'Saving...';
+
+    // Validate
+    for (const mount of projectMounts) {
+        if (!mount.host || !mount.container) {
+            statusEl.textContent = 'Error: both host and container paths are required';
+            return;
+        }
+    }
+
+    try {
+        const response = await fetch(`/project/${projectName}/mounts`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mounts: projectMounts }),
+        });
+
+        if (response.ok) {
+            statusEl.textContent = 'Saved!';
+            setTimeout(() => statusEl.textContent = '', 2000);
+        } else {
+            const err = await response.json();
+            statusEl.textContent = 'Error: ' + (err.error || 'Failed to save');
+        }
+    } catch (e) {
+        statusEl.textContent = 'Error: ' + e.message;
+    }
+});
 
 async function loadCollabTasks() {
     try {
@@ -605,6 +703,71 @@ loadFileTree();
     align-items: center;
     flex-wrap: wrap;
     gap: 0.5rem;
+}
+.mounts-section {
+    margin-bottom: 1.5rem;
+    padding: 1rem;
+    background: rgba(255,255,255,0.03);
+    border-radius: 8px;
+    border: 1px solid #333;
+}
+.mounts-section h2 {
+    margin-top: 0;
+}
+.mount-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+.mount-input {
+    flex: 1;
+    padding: 0.4rem 0.6rem;
+    background: #1a1a2e;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #e0e0e0;
+    font-family: monospace;
+    font-size: 0.85rem;
+}
+.mount-input:focus {
+    border-color: #7c4dff;
+    outline: none;
+}
+.mount-arrow {
+    color: #888;
+    font-size: 1.1rem;
+    flex-shrink: 0;
+}
+.mount-readonly-label {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.8rem;
+    color: #aaa;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.mount-warning {
+    color: #f0ad4e;
+    font-size: 1.1rem;
+    cursor: help;
+}
+.mount-remove {
+    color: #e74c3c;
+    font-size: 1.2rem;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0 0.3rem;
+}
+.mount-remove:hover {
+    color: #ff6b6b;
+}
+.save-status {
+    font-size: 0.85rem;
+    color: #888;
+    margin-left: 0.5rem;
 }
 </style>
 {% endblock %}
