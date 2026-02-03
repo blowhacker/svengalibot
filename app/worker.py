@@ -201,83 +201,113 @@ class Worker:
         # Get Claude auth directory
         claude_config_dir = Path.home() / ".claude"
 
-        # Refresh OAuth token on host before Docker run
-        # Must make actual API call to trigger token refresh
-        try:
-            logger.info("Refreshing OAuth token on host...")
-            subprocess.run(
-                ["claude", "-p", "--dangerously-skip-permissions", "say ok"],
-                capture_output=True,
-                timeout=60,
-            )
-            # Ensure credentials file is flushed to disk
-            subprocess.run(["sync"], capture_output=True)
-            logger.info("Token refreshed successfully")
+        # Auth strategy: Linux mounts ~/.claude directly, macOS uses base64 env vars
+        # (Docker Desktop on macOS has mount caching issues with credentials)
+        import platform
+        use_mount_auth = platform.system() == "Linux"
 
-            # Debug: show host file details
-            cred_file = claude_config_dir / ".credentials.json"
-            if cred_file.exists():
-                stat = cred_file.stat()
-                logger.info(f"Host credentials file: {cred_file}")
-                logger.info(f"Host credentials mtime: {stat.st_mtime} ({datetime.fromtimestamp(stat.st_mtime)})")
-                # Read and log expiresAt
-                try:
-                    with open(cred_file) as f:
-                        creds = json.load(f)
-                    expires = creds.get("claudeAiOauth", {}).get("expiresAt")
-                    logger.info(f"Host credentials expiresAt: {expires}")
-                except Exception as e:
-                    logger.warning(f"Could not read host credentials: {e}")
-            else:
-                logger.error(f"Host credentials file NOT FOUND: {cred_file}")
-        except Exception as e:
-            logger.warning(f"Token refresh failed (continuing anyway): {e}")
-
-        # Read credentials directly in Python to avoid Docker mount caching issues
+        # Verify credentials exist on host
         cred_file = claude_config_dir / ".credentials.json"
-        settings_file = claude_config_dir / "settings.json"
+        if not cred_file.exists():
+            logger.error(f"Host credentials file NOT FOUND: {cred_file}")
+            return WorkerResult(
+                success=False, output="", diff="", summary="",
+                error=f"Claude credentials not found at {cred_file}. Run 'claude' to authenticate.",
+            )
+
+        # Log credential info
+        try:
+            with open(cred_file) as f:
+                creds_data = json.load(f)
+            expires = creds_data.get("claudeAiOauth", {}).get("expiresAt")
+            logger.info(f"Host credentials expiresAt: {expires}")
+        except Exception as e:
+            logger.warning(f"Could not read host credentials: {e}")
 
         creds_b64 = ""
         settings_b64 = ""
-        try:
-            if cred_file.exists():
+        if not use_mount_auth:
+            # macOS: refresh token and encode as base64 for env var injection
+            try:
+                logger.info("Refreshing OAuth token on host...")
+                subprocess.run(
+                    ["claude", "-p", "--dangerously-skip-permissions", "say ok"],
+                    capture_output=True,
+                    timeout=60,
+                )
+                subprocess.run(["sync"], capture_output=True)
+                logger.info("Token refreshed successfully")
+            except Exception as e:
+                logger.warning(f"Token refresh failed (continuing anyway): {e}")
+
+            settings_file = claude_config_dir / "settings.json"
+            try:
                 creds_content = cred_file.read_text()
                 creds_b64 = base64.b64encode(creds_content.encode()).decode()
                 logger.info(f"Read credentials ({len(creds_content)} bytes)")
-                # Log expiresAt for debugging
-                try:
-                    creds_data = json.loads(creds_content)
-                    expires = creds_data.get("claudeAiOauth", {}).get("expiresAt")
-                    logger.info(f"Credentials expiresAt: {expires}")
-                except:
-                    pass
+                if settings_file.exists():
+                    settings_b64 = base64.b64encode(settings_file.read_text().encode()).decode()
+            except Exception as e:
+                logger.error(f"Failed to read credentials: {e}")
+
+        if use_mount_auth:
+            # Linux: copy credentials to a temp dir and mount it
+            # (don't mount ~/.claude directly - Claude CLI writes to it)
+            import tempfile, shutil
+            self._auth_tmpdir = tempfile.mkdtemp(prefix="svengali-auth-")
+            shutil.copy2(cred_file, Path(self._auth_tmpdir) / ".credentials.json")
+            settings_file = claude_config_dir / "settings.json"
             if settings_file.exists():
-                settings_b64 = base64.b64encode(settings_file.read_text().encode()).decode()
-        except Exception as e:
-            logger.error(f"Failed to read credentials: {e}")
+                shutil.copy2(settings_file, Path(self._auth_tmpdir) / "settings.json")
+            logger.info(f"Copied credentials to temp dir: {self._auth_tmpdir}")
 
-        # Build docker run command
-        # Pass credentials as base64 env vars to avoid mount caching issues
-        setup_script = (
-            "echo $CREDS_B64 | base64 -d > /home/worker/.claude/.credentials.json; "
-            "echo $SETTINGS_B64 | base64 -d > /home/worker/.claude/settings.json 2>/dev/null || true; "
-            "echo '=== Credentials expiresAt ==='; "
-            "grep -o 'expiresAt\":[0-9]*' /home/worker/.claude/.credentials.json | head -1; "
-            "echo '=== Running Claude ==='; "
-            "claude -p --dangerously-skip-permissions"
-        )
+            setup_script = (
+                "echo '=== Claude auth: volume mount ==='; "
+                "if [ ! -s /home/worker/.claude/.credentials.json ]; then "
+                "  echo 'ERROR: credentials file missing or empty' >&2; exit 1; "
+                "fi; "
+                "grep -o 'expiresAt\":[0-9]*' /home/worker/.claude/.credentials.json | head -1; "
+                "echo '=== Running Claude ==='; "
+                "claude -p --dangerously-skip-permissions"
+            )
 
-        cmd = [
-            "docker", "run",
-            "--rm",  # Remove container after exit
-            "-i",  # Keep stdin open for prompt
-            "-v", f"{self.workspace_dir.absolute()}:/workspace",
-            "-e", "HOME=/home/worker",
-            "-e", f"CREDS_B64={creds_b64}",
-            "-e", f"SETTINGS_B64={settings_b64}",
-            "--memory", self.docker_memory,
-            "--cpus", str(self.docker_cpus),
-        ]
+            cmd = [
+                "docker", "run",
+                "--rm",
+                "-i",
+                "-v", f"{self.workspace_dir.absolute()}:/workspace",
+                "-v", f"{self._auth_tmpdir}:/home/worker/.claude",
+                "-e", "HOME=/home/worker",
+                "--memory", self.docker_memory,
+                "--cpus", str(self.docker_cpus),
+            ]
+        else:
+            # macOS: pass credentials as base64 env vars to avoid mount caching
+            setup_script = (
+                "echo '=== Claude auth: base64 inject ==='; "
+                "printf '%s' \"$CREDS_B64\" | base64 -d > /home/worker/.claude/.credentials.json; "
+                "printf '%s' \"$SETTINGS_B64\" | base64 -d > /home/worker/.claude/settings.json 2>/dev/null || true; "
+                "if [ ! -s /home/worker/.claude/.credentials.json ]; then "
+                "  echo 'ERROR: credentials decode failed - file is empty' >&2; exit 1; "
+                "fi; "
+                "python3 -c \"import json; json.load(open('/home/worker/.claude/.credentials.json'))\" 2>/dev/null || "
+                "  { echo 'ERROR: credentials file is not valid JSON' >&2; exit 1; }; "
+                "grep -o 'expiresAt\":[0-9]*' /home/worker/.claude/.credentials.json | head -1; "
+                "echo '=== Running Claude ==='; "
+                "claude -p --dangerously-skip-permissions"
+            )
+
+            cmd = [
+                "docker", "run",
+                "--rm",
+                "-i",
+                "-v", f"{self.workspace_dir.absolute()}:/workspace",
+                "-e", "HOME=/home/worker",
+                "-e", f"CREDS_B64={creds_b64}",
+                "-e", f"SETTINGS_B64={settings_b64}",
+                "--memory", self.docker_memory,
+                "--cpus", str(self.docker_cpus),
+            ]
 
         # Add user-configured mounts
         for mount in self.mounts:
@@ -346,6 +376,15 @@ class Worker:
                 summary="",
                 error=str(e),
             )
+        finally:
+            # Clean up temp auth dir if created
+            if hasattr(self, '_auth_tmpdir') and self._auth_tmpdir:
+                import shutil
+                try:
+                    shutil.rmtree(self._auth_tmpdir)
+                except Exception:
+                    pass
+                self._auth_tmpdir = None
 
     def execute(
         self,
