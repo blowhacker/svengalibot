@@ -201,17 +201,23 @@ class Worker:
         # Get Claude auth directory
         claude_config_dir = Path.home() / ".claude"
 
-        # Auth strategy:
-        # 1. ANTHROPIC_API_KEY env var (works everywhere, required on macOS where
-        #    Claude Code stores credentials in Keychain, not on disk)
-        # 2. Linux: copy ~/.claude/.credentials.json to temp dir and mount it
-        # 3. macOS fallback: base64-encode .credentials.json into env var
+        # Auth strategy (in priority order):
+        # 1. ANTHROPIC_API_KEY env var (paid API key - works everywhere)
+        # 2. ~/.claude/.credentials.json on disk (Linux keeps this)
+        # 3. macOS Keychain extraction (Claude Code stores OAuth creds there)
         import os
         import platform
 
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         cred_file = claude_config_dir / ".credentials.json"
         has_cred_file = cred_file.exists()
+        keychain_creds = None
+
+        # On macOS, try extracting OAuth creds from Keychain if no file on disk
+        if not api_key and not has_cred_file and platform.system() == "Darwin":
+            keychain_creds = self._extract_keychain_credentials()
+            if keychain_creds:
+                logger.info("Extracted OAuth credentials from macOS Keychain")
 
         if api_key:
             auth_mode = "api_key"
@@ -226,13 +232,15 @@ class Worker:
                 logger.info(f"Using credentials file (expiresAt: {expires})")
             except Exception as e:
                 logger.warning(f"Could not read host credentials: {e}")
+        elif keychain_creds:
+            auth_mode = "keychain"
+            logger.info("Using macOS Keychain OAuth credentials for Docker auth")
         else:
             logger.error(f"No auth available: ANTHROPIC_API_KEY not set and {cred_file} not found")
             hint = (
-                "On macOS, Claude Code stores credentials in Keychain (not on disk). "
-                "Set ANTHROPIC_API_KEY in your environment or .env file for Docker mode."
+                "Run 'claude' to authenticate first. On macOS, also ensure Keychain access is allowed."
                 if platform.system() == "Darwin"
-                else f"Run 'claude' to authenticate, or set ANTHROPIC_API_KEY."
+                else "Run 'claude' to authenticate, or set ANTHROPIC_API_KEY."
             )
             return WorkerResult(
                 success=False, output="", diff="", summary="",
@@ -283,16 +291,24 @@ class Worker:
                 "--memory", self.docker_memory,
                 "--cpus", str(self.docker_cpus),
             ]
-        elif auth_mode == "mount":
-            # Linux: copy credentials to a temp dir and mount it
-            # (don't mount ~/.claude directly - Claude CLI writes to it)
+        elif auth_mode in ("mount", "keychain"):
+            # Write credentials to a temp dir and mount into container
             import tempfile, shutil
             self._auth_tmpdir = tempfile.mkdtemp(prefix="svengali-auth-")
-            shutil.copy2(cred_file, Path(self._auth_tmpdir) / ".credentials.json")
+
+            if auth_mode == "keychain":
+                # Write Keychain-extracted creds to temp file
+                creds_path = Path(self._auth_tmpdir) / ".credentials.json"
+                creds_path.write_text(json.dumps(keychain_creds))
+                logger.info(f"Wrote Keychain credentials to temp dir")
+            else:
+                # Linux: copy existing credentials file
+                shutil.copy2(cred_file, Path(self._auth_tmpdir) / ".credentials.json")
+
             settings_file = claude_config_dir / "settings.json"
             if settings_file.exists():
                 shutil.copy2(settings_file, Path(self._auth_tmpdir) / "settings.json")
-            logger.info(f"Copied credentials to temp dir: {self._auth_tmpdir}")
+            logger.info(f"Auth temp dir: {self._auth_tmpdir}")
 
             setup_script = (
                 "echo '=== Claude auth: volume mount ==='; "
@@ -315,7 +331,7 @@ class Worker:
                 "--cpus", str(self.docker_cpus),
             ]
         else:
-            # macOS: pass credentials as base64 env vars to avoid mount caching
+            # macOS fallback: pass credentials as base64 env vars
             setup_script = (
                 "echo '=== Claude auth: base64 inject ==='; "
                 "printf '%s' \"$CREDS_B64\" | base64 -d > /home/worker/.claude/.credentials.json; "
@@ -418,6 +434,42 @@ class Worker:
                 except Exception:
                     pass
                 self._auth_tmpdir = None
+
+    def _extract_keychain_credentials(self) -> Optional[dict]:
+        """Extract Claude OAuth credentials from macOS Keychain.
+
+        Claude Code on macOS stores OAuth tokens in the system Keychain
+        under service name "Claude Code-credentials" instead of on disk.
+        Returns the parsed credentials dict, or None if not found.
+        """
+        try:
+            result = subprocess.run(
+                ["security", "find-generic-password",
+                 "-s", "Claude Code-credentials", "-w"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                logger.warning(f"Keychain lookup failed: {result.stderr.strip()}")
+                return None
+
+            creds_json = result.stdout.strip()
+            if not creds_json:
+                return None
+
+            creds = json.loads(creds_json)
+            logger.info(f"Keychain credentials extracted (expiresAt: {creds.get('claudeAiOauth', {}).get('expiresAt')})")
+            return creds
+        except json.JSONDecodeError:
+            logger.warning("Keychain credentials are not valid JSON")
+            return None
+        except FileNotFoundError:
+            # 'security' command not found (not macOS)
+            return None
+        except Exception as e:
+            logger.warning(f"Keychain extraction failed: {e}")
+            return None
 
     def execute(
         self,
