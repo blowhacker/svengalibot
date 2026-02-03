@@ -201,33 +201,48 @@ class Worker:
         # Get Claude auth directory
         claude_config_dir = Path.home() / ".claude"
 
-        # Auth strategy: Linux mounts ~/.claude directly, macOS uses base64 env vars
-        # (Docker Desktop on macOS has mount caching issues with credentials)
+        # Auth strategy:
+        # 1. ANTHROPIC_API_KEY env var (works everywhere, required on macOS where
+        #    Claude Code stores credentials in Keychain, not on disk)
+        # 2. Linux: copy ~/.claude/.credentials.json to temp dir and mount it
+        # 3. macOS fallback: base64-encode .credentials.json into env var
+        import os
         import platform
-        use_mount_auth = platform.system() == "Linux"
 
-        # Verify credentials exist on host
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         cred_file = claude_config_dir / ".credentials.json"
-        if not cred_file.exists():
-            logger.error(f"Host credentials file NOT FOUND: {cred_file}")
+        has_cred_file = cred_file.exists()
+
+        if api_key:
+            auth_mode = "api_key"
+            logger.info("Using ANTHROPIC_API_KEY for Docker auth")
+        elif has_cred_file:
+            auth_mode = "mount" if platform.system() == "Linux" else "base64"
+            # Log credential info
+            try:
+                with open(cred_file) as f:
+                    creds_data = json.load(f)
+                expires = creds_data.get("claudeAiOauth", {}).get("expiresAt")
+                logger.info(f"Using credentials file (expiresAt: {expires})")
+            except Exception as e:
+                logger.warning(f"Could not read host credentials: {e}")
+        else:
+            logger.error(f"No auth available: ANTHROPIC_API_KEY not set and {cred_file} not found")
+            hint = (
+                "On macOS, Claude Code stores credentials in Keychain (not on disk). "
+                "Set ANTHROPIC_API_KEY in your environment or .env file for Docker mode."
+                if platform.system() == "Darwin"
+                else f"Run 'claude' to authenticate, or set ANTHROPIC_API_KEY."
+            )
             return WorkerResult(
                 success=False, output="", diff="", summary="",
-                error=f"Claude credentials not found at {cred_file}. Run 'claude' to authenticate.",
+                error=f"No Docker auth available. {hint}",
             )
-
-        # Log credential info
-        try:
-            with open(cred_file) as f:
-                creds_data = json.load(f)
-            expires = creds_data.get("claudeAiOauth", {}).get("expiresAt")
-            logger.info(f"Host credentials expiresAt: {expires}")
-        except Exception as e:
-            logger.warning(f"Could not read host credentials: {e}")
 
         creds_b64 = ""
         settings_b64 = ""
-        if not use_mount_auth:
-            # macOS: refresh token and encode as base64 for env var injection
+        if auth_mode == "base64":
+            # macOS with credentials file: refresh token and encode as base64
             try:
                 logger.info("Refreshing OAuth token on host...")
                 subprocess.run(
@@ -250,7 +265,25 @@ class Worker:
             except Exception as e:
                 logger.error(f"Failed to read credentials: {e}")
 
-        if use_mount_auth:
+        if auth_mode == "api_key":
+            # Pass API key as env var - simplest and most portable
+            setup_script = (
+                "echo '=== Claude auth: API key ==='; "
+                "echo '=== Running Claude ==='; "
+                "claude -p --dangerously-skip-permissions"
+            )
+
+            cmd = [
+                "docker", "run",
+                "--rm",
+                "-i",
+                "-v", f"{self.workspace_dir.absolute()}:/workspace",
+                "-e", "HOME=/home/worker",
+                "-e", f"ANTHROPIC_API_KEY={api_key}",
+                "--memory", self.docker_memory,
+                "--cpus", str(self.docker_cpus),
+            ]
+        elif auth_mode == "mount":
             # Linux: copy credentials to a temp dir and mount it
             # (don't mount ~/.claude directly - Claude CLI writes to it)
             import tempfile, shutil
