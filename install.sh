@@ -223,7 +223,7 @@ docker:
 
 ui:
   host: 0.0.0.0
-  port: 5000
+  port: 5011
 EOF
         success "Created default config.yaml"
     fi
@@ -260,15 +260,13 @@ print_summary() {
     echo -e "   ${YELLOW}python run.py${NC}"
     echo ""
     echo "3. (Optional) Add OpenAI key for collaborator mode:"
-    echo -e "   Edit .env or configure at ${YELLOW}http://localhost:5000/setup${NC}"
-    echo ""
-    echo "4. Build Docker image (required for default mode):"
-    echo -e "   ${YELLOW}docker build -t svengalibot-worker docker/${NC}"
+    echo -e "   Edit .env or configure at ${YELLOW}http://localhost:5011/setup${NC}"
     echo ""
     echo -e "   ${YELLOW}Note:${NC} Docker mode is the default for safety (sandboxed execution)."
-    echo -e "   Local mode available but runs with --dangerously-skip-permissions."
+    echo -e "   If the Docker image wasn't built during install, run:"
+    echo -e "   ${YELLOW}docker build -t svengalibot-worker docker/${NC}"
     echo ""
-    echo -e "${BLUE}Web UI will be available at:${NC} http://localhost:5000"
+    echo -e "${BLUE}Web UI will be available at:${NC} http://localhost:5011"
     echo ""
 }
 
@@ -313,6 +311,15 @@ main() {
         fi
     fi
 
+    # Build Docker image if Docker is available
+    if check_command docker; then
+        read -p "Build Docker worker image? (required for Docker mode) (Y/n) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            build_docker_image
+        fi
+    fi
+
     print_summary
 }
 
@@ -323,6 +330,9 @@ if [[ "$1" == "--yes" ]] || [[ "$1" == "-y" ]]; then
     setup_directories
     setup_python_env
     setup_config
+    if check_command docker; then
+        build_docker_image
+    fi
     print_summary
 else
     main

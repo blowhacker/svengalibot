@@ -101,7 +101,7 @@ mkdir -p data/projects
 
 ### API Keys
 
-1. Navigate to `http://localhost:5000/setup` after starting
+1. Navigate to `http://localhost:5011/setup` after starting
 2. Enter your OpenAI API key (optional - only needed for reviewer mode)
 3. Claude CLI uses your existing authentication (run `claude` to authenticate)
 
@@ -135,7 +135,7 @@ source venv/bin/activate
 python run.py
 ```
 
-Open `http://localhost:5000` in your browser.
+Open `http://localhost:5011` in your browser.
 
 ### Creating a Project
 
@@ -281,7 +281,7 @@ claude  # Re-authenticate on host first
 
 ```bash
 # Find and kill existing process
-lsof -i :5000
+lsof -i :5011
 kill <PID>
 
 # Or use a different port
