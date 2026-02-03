@@ -192,29 +192,28 @@ Svengalibot supports various collaboration patterns:
 
 ## Execution Modes
 
-### Local Mode (Default)
-
-Claude CLI runs directly on your machine:
-- Uses your existing Claude authentication
-- Full access to local tools and environment
-- Faster startup, no container overhead
-
-### Docker Mode
+### Docker Mode (Default, Recommended)
 
 Claude CLI runs in an isolated container:
-- Sandboxed execution environment
+- **Sandboxed execution** - Claude can only modify files in the project workspace
 - Consistent, reproducible environment
-- Requires Docker and the `svengalibot-worker` image
+- Required because we use `--dangerously-skip-permissions`
 
 Build the Docker image:
 ```bash
-cd docker
-docker build -t svengalibot-worker .
+docker build -t svengalibot-worker docker/
 ```
 
-Enable Docker mode in project settings or `/setup`.
-
 **Note**: Docker mode requires re-authentication if you haven't used Claude CLI on the host for 8+ hours (OAuth token expiration).
+
+### Local Mode
+
+Claude CLI runs directly on your machine:
+- Uses your existing Claude authentication
+- Faster startup, no container overhead
+- **Warning**: Runs with `--dangerously-skip-permissions` - Claude can modify any files
+
+Only use local mode if you understand the risks or are working in an already-sandboxed environment (VM, container, etc.).
 
 ## Project Structure
 

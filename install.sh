@@ -215,7 +215,7 @@ manager:
   model: gpt-5.2
 
 worker:
-  mode: local  # local or docker
+  mode: docker  # docker (recommended) or local
 
 docker:
   memory: 4g
@@ -262,9 +262,11 @@ print_summary() {
     echo "3. (Optional) Add OpenAI key for collaborator mode:"
     echo -e "   Edit .env or configure at ${YELLOW}http://localhost:5000/setup${NC}"
     echo ""
-    echo "4. (Optional) Use Docker for isolated execution:"
+    echo "4. Build Docker image (required for default mode):"
     echo -e "   ${YELLOW}docker build -t svengalibot-worker docker/${NC}"
-    echo -e "   Then enable Docker mode in /setup"
+    echo ""
+    echo -e "   ${YELLOW}Note:${NC} Docker mode is the default for safety (sandboxed execution)."
+    echo -e "   Local mode available but runs with --dangerously-skip-permissions."
     echo ""
     echo -e "${BLUE}Web UI will be available at:${NC} http://localhost:5000"
     echo ""
