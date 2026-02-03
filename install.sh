@@ -35,6 +35,12 @@ detect_os() {
 OS=$(detect_os)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# On Apple Silicon, ensure brew runs natively
+BREW="brew"
+if [[ "$OS" == "macos" ]] && [[ $(uname -m) == "arm64" || -d "/opt/homebrew" ]]; then
+    BREW="arch -arm64 brew"
+fi
+
 echo ""
 echo "╔═══════════════════════════════════════╗"
 echo "║       Svengalibot Installer           ║"
@@ -70,7 +76,7 @@ install_system_deps() {
             if ! check_command brew; then
                 error "Homebrew not found. Install from https://brew.sh"
             fi
-            brew install python3 git curl
+            $BREW install python3 git curl
             ;;
         *)
             warn "Unknown OS. Please install manually: python3, pip, git, curl"
@@ -104,7 +110,7 @@ install_docker() {
             sudo usermod -aG docker $USER
             ;;
         macos)
-            brew install --cask docker
+            $BREW install --cask docker
             warn "Please open Docker Desktop to complete installation"
             ;;
         *)
@@ -138,7 +144,7 @@ install_claude_cli() {
                 sudo pacman -Sy --noconfirm nodejs npm
                 ;;
             macos)
-                brew install node
+                $BREW install node
                 ;;
         esac
     fi
