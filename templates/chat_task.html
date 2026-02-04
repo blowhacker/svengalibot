@@ -453,17 +453,23 @@ function handleStreamEvent(data) {
             break;
 
         case 'worker_started':
-            // Don't create terminal or streaming message yet.
-            // Wait for the first data event to decide which mode to use:
-            // - terminal_data → create xterm.js terminal
-            // - chunk_output  → create text streaming message
+            // Always create a streaming text message immediately so the user
+            // sees "Claude is working". If terminal_data arrives (local PTY),
+            // we replace it with an xterm.js terminal.
             finalizeStreamingMessage();
+            startStreamingMessage('worker', 'claude');
             break;
 
         case 'terminal_data': {
             // PTY output - decode base64 and write to xterm.js
-            // Lazily create terminal on first terminal_data event
+            // On first terminal_data, replace the text streaming message with a terminal
             if (!activeTerminal && typeof window.Terminal !== 'undefined') {
+                // Remove the text streaming message and create terminal instead
+                if (streamingMessageEl) {
+                    const oldMsg = streamingMessageEl.closest('.chat-message');
+                    if (oldMsg) oldMsg.remove();
+                    streamingMessageEl = null;
+                }
                 createTerminalMessage();
             }
             if (activeTerminal && data.data?.content) {
