@@ -757,25 +757,12 @@ class Worker:
             use_pty: If True, use PTY execution for full terminal rendering.
                      The on_output callback will receive bytes instead of str.
         """
-        if use_pty:
-            if self.use_docker:
-                result = self.execute_docker_pty(
-                    chunk_spec, context, guide, previous_feedback, on_output, baseline_commit
-                )
-                # If PTY failed due to missing `script` or TTY issues, fall back to text mode
-                if not result.success and result.error and any(
-                    msg in (result.output + (result.error or "")).lower()
-                    for msg in ["not a tty", "script: not found", "not found: script"]
-                ):
-                    logger.warning(f"Docker PTY unavailable ({result.error}), falling back to text mode")
-                    return self.execute_docker(
-                        chunk_spec, context, guide, previous_feedback, on_output, baseline_commit
-                    )
-                return result
-            else:
-                return self.execute_local_pty(
-                    chunk_spec, context, guide, previous_feedback, on_output, baseline_commit
-                )
+        # PTY mode only for local execution — gives us xterm.js rendering.
+        # Docker stays on the proven execute_docker path (uses -p flag).
+        if use_pty and not self.use_docker:
+            return self.execute_local_pty(
+                chunk_spec, context, guide, previous_feedback, on_output, baseline_commit
+            )
         elif self.use_docker:
             return self.execute_docker(
                 chunk_spec, context, guide, previous_feedback, on_output, baseline_commit
