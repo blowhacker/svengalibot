@@ -244,20 +244,52 @@ class Worker:
 
             logger.info("Waiting for Docker Claude to complete (max 10 minutes)...")
 
+            # Write prompt to stdin in a thread so we can read stdout concurrently
+            import time as _time
+
+            def _write_stdin():
+                try:
+                    process.stdin.write(prompt)
+                    process.stdin.close()
+                except Exception as e:
+                    logger.warning(f"Failed to write prompt to Docker stdin: {e}")
+
+            stdin_thread = threading.Thread(target=_write_stdin, daemon=True)
+            stdin_thread.start()
+
+            # Stream output as it arrives instead of waiting for communicate()
+            output_parts = []
+            start_time = _time.time()
             try:
-                output, _ = process.communicate(input=prompt, timeout=600)
-                logger.info(f"Docker Claude finished with exit code {process.returncode}")
+                while True:
+                    if _time.time() - start_time > 600:
+                        logger.error("Docker Claude timed out after 10 minutes")
+                        process.kill()
+                        break
 
-                if on_output and output:
-                    for i in range(0, len(output), 500):
-                        chunk = output[i:i+500]
-                        on_output(chunk)
+                    line = process.stdout.readline()
+                    if not line:
+                        if process.poll() is not None:
+                            break
+                        continue
 
-            except subprocess.TimeoutExpired:
-                logger.error("Docker Claude timed out after 10 minutes")
-                process.kill()
-                output, _ = process.communicate()
-                output = output or ""
+                    output_parts.append(line)
+                    if on_output:
+                        on_output(line)
+
+                # Drain any remaining output
+                remaining = process.stdout.read()
+                if remaining:
+                    output_parts.append(remaining)
+                    if on_output:
+                        on_output(remaining)
+
+            except Exception as e:
+                logger.warning(f"Error reading Docker output: {e}")
+
+            process.wait()
+            output = "".join(output_parts)
+            logger.info(f"Docker Claude finished with exit code {process.returncode}")
 
             # Get diff
             diff = self._get_diff_since_commit(baseline_commit)
