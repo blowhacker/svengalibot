@@ -453,17 +453,19 @@ function handleStreamEvent(data) {
             break;
 
         case 'worker_started':
-            // Start a terminal message for worker output
+            // Don't create terminal or streaming message yet.
+            // Wait for the first data event to decide which mode to use:
+            // - terminal_data → create xterm.js terminal
+            // - chunk_output  → create text streaming message
             finalizeStreamingMessage();
-            if (typeof window.Terminal !== 'undefined') {
-                createTerminalMessage();
-            } else {
-                startStreamingMessage('worker', 'claude');
-            }
             break;
 
         case 'terminal_data': {
             // PTY output - decode base64 and write to xterm.js
+            // Lazily create terminal on first terminal_data event
+            if (!activeTerminal && typeof window.Terminal !== 'undefined') {
+                createTerminalMessage();
+            }
             if (activeTerminal && data.data?.content) {
                 try {
                     const raw = atob(data.data.content);

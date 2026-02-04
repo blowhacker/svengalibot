@@ -507,28 +507,24 @@ class Worker:
             winsize = struct.pack('HHHH', 40, 120, 0, 0)
             fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
 
-            # Launch Claude with PTY for stdout/stderr, PIPE for stdin
-            cmd = ["claude", "--dangerously-skip-permissions"]
+            # Pass prompt as positional argument for one-shot mode.
+            # This way Claude processes the prompt and exits without needing
+            # stdin to be a TTY. stdout/stderr on PTY slave ensures isatty(1)==true
+            # so React Ink renders its full UI.
+            cmd = ["claude", "--dangerously-skip-permissions", prompt]
             logger.info(f"Starting Claude CLI (PTY) in {self.workspace_dir}")
             logger.info(f"Prompt length: {len(prompt)} chars")
 
             process = subprocess.Popen(
                 cmd,
                 cwd=self.workspace_dir,
-                stdin=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
                 stdout=slave_fd,
                 stderr=slave_fd,
             )
 
             # Close slave_fd in parent - child has it
             os.close(slave_fd)
-
-            # Write prompt to stdin then close to signal EOF
-            try:
-                process.stdin.write(prompt.encode('utf-8'))
-                process.stdin.close()
-            except Exception as e:
-                logger.warning(f"Failed to write prompt to stdin: {e}")
 
             logger.info("Reading PTY output (max 10 minutes)...")
 
@@ -620,9 +616,13 @@ class Worker:
     ) -> WorkerResult:
         """Execute a chunk in Docker with PTY allocation for terminal rendering.
 
-        Uses docker run -t to allocate a PTY inside the container, giving us
-        full React Ink UI output on Docker's stdout.
+        Uses `script` inside the container to allocate a PTY (since docker -t
+        requires the host stdin to be a TTY, which it isn't from subprocess).
+        The prompt is written to a temp file and mounted into the container
+        to avoid shell escaping issues.
         """
+        import tempfile
+
         prompt = self._build_prompt(chunk_spec, context, guide, previous_feedback)
 
         logger.info("Executing Claude CLI in Docker container (PTY mode)")
@@ -636,25 +636,34 @@ class Worker:
                 error=str(e),
             )
 
+        # Write prompt to temp file and mount it into container
+        prompt_tmpfile = tempfile.NamedTemporaryFile(
+            mode='w', suffix='.txt', delete=False, prefix='svengali-prompt-')
+        prompt_tmpfile.write(prompt)
+        prompt_tmpfile.close()
+        self._prompt_tmpfile = prompt_tmpfile.name
+
         try:
             if not baseline_commit:
                 baseline_commit = self._get_current_commit()
             logger.info(f"Using baseline commit for diff: {baseline_commit[:8] if baseline_commit else 'none'}")
 
-            # Build full setup script - note: no -p flag, we want interactive rendering
+            # Use `script` to allocate a PTY inside the container.
+            # Claude gets the prompt as a positional arg read from the mounted file.
+            # `script -qefc` runs the command in a PTY and streams output.
             full_setup = (
                 setup_script +
                 " echo '=== Running Claude (PTY) ==='; "
-                "claude --dangerously-skip-permissions"
+                "PROMPT=$(cat /tmp/svengali_prompt.txt); "
+                "exec script -qefc \"claude --dangerously-skip-permissions \\\"\\$PROMPT\\\"\" /dev/null"
             )
 
             cmd = [
                 "docker", "run",
                 "--rm",
-                "-i",
-                "-t",  # Allocate PTY inside container
                 "-e", "COLUMNS=120",
                 "-e", "LINES=40",
+                "-v", f"{prompt_tmpfile.name}:/tmp/svengali_prompt.txt:ro",
             ] + cmd_parts + [
                 DOCKER_IMAGE,
                 "bash", "-c", full_setup,
@@ -664,21 +673,14 @@ class Worker:
 
             process = subprocess.Popen(
                 cmd,
-                stdin=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
             )
 
-            logger.info("Writing prompt to Docker stdin and reading PTY output...")
+            logger.info("Reading Docker PTY output...")
 
-            # Write prompt to stdin then close
-            try:
-                process.stdin.write(prompt.encode('utf-8'))
-                process.stdin.close()
-            except Exception as e:
-                logger.warning(f"Failed to write prompt to Docker stdin: {e}")
-
-            # Read loop - Docker -t gives us PTY output on stdout as bytes
+            # Read loop - script gives us PTY output on stdout as bytes
             raw_output_parts = []
             import time
             start_time = time.time()
@@ -729,6 +731,13 @@ class Worker:
             )
         finally:
             self._cleanup_docker_auth()
+            # Clean up prompt temp file
+            if hasattr(self, '_prompt_tmpfile') and self._prompt_tmpfile:
+                try:
+                    os.unlink(self._prompt_tmpfile)
+                except Exception:
+                    pass
+                self._prompt_tmpfile = None
 
     def execute(
         self,
