@@ -649,13 +649,15 @@ class Worker:
             logger.info(f"Using baseline commit for diff: {baseline_commit[:8] if baseline_commit else 'none'}")
 
             # Use `script` to allocate a PTY inside the container.
-            # Claude gets the prompt as a positional arg read from the mounted file.
-            # `script -qefc` runs the command in a PTY and streams output.
+            # Single quotes around the -c argument prevent the outer bash from
+            # expanding $(cat ...). The inner shell (spawned by script) reads the
+            # prompt file directly — no intermediate variable, no escaping issues.
             full_setup = (
                 setup_script +
                 " echo '=== Running Claude (PTY) ==='; "
-                "PROMPT=$(cat /tmp/svengali_prompt.txt); "
-                "exec script -qefc \"claude --dangerously-skip-permissions \\\"\\$PROMPT\\\"\" /dev/null"
+                "exec script -qfc "
+                "'exec claude --dangerously-skip-permissions "
+                "\"$(cat /tmp/svengali_prompt.txt)\"' /dev/null"
             )
 
             cmd = [
@@ -757,9 +759,19 @@ class Worker:
         """
         if use_pty:
             if self.use_docker:
-                return self.execute_docker_pty(
+                result = self.execute_docker_pty(
                     chunk_spec, context, guide, previous_feedback, on_output, baseline_commit
                 )
+                # If PTY failed due to missing `script` or TTY issues, fall back to text mode
+                if not result.success and result.error and any(
+                    msg in (result.output + (result.error or "")).lower()
+                    for msg in ["not a tty", "script: not found", "not found: script"]
+                ):
+                    logger.warning(f"Docker PTY unavailable ({result.error}), falling back to text mode")
+                    return self.execute_docker(
+                        chunk_spec, context, guide, previous_feedback, on_output, baseline_commit
+                    )
+                return result
             else:
                 return self.execute_local_pty(
                     chunk_spec, context, guide, previous_feedback, on_output, baseline_commit
