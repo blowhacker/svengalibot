@@ -1532,19 +1532,32 @@ Be substantive and make real progress each iteration.""",
     output_buffer = []
     last_broadcast = [0]  # Use list to allow mutation in closure
 
-    def on_output(line: str):
+    def on_output(data):
         import time
-        output_buffer.append(line)
-        logger.debug(f"Worker output: {line[:100]}...")
+        import base64 as b64
 
-        # Throttle broadcasts to max once per 200ms
-        now = time.time()
-        if now - last_broadcast[0] >= 0.2:
-            last_broadcast[0] = now
-            _broadcast_collab_event(project.name, task.id, {
-                "type": "chunk_output",
-                "data": {"content": line},
-            })
+        if isinstance(data, bytes):
+            # PTY mode: base64-encode raw bytes and send as terminal_data
+            output_buffer.append(data.decode('utf-8', errors='replace'))
+            now = time.time()
+            if now - last_broadcast[0] >= 0.05:  # 50ms throttle for smooth terminal
+                last_broadcast[0] = now
+                encoded = b64.b64encode(data).decode('ascii')
+                _broadcast_collab_event(project.name, task.id, {
+                    "type": "terminal_data",
+                    "data": {"content": encoded},
+                })
+        else:
+            # Legacy text mode fallback
+            output_buffer.append(data)
+            logger.debug(f"Worker output: {data[:100]}...")
+            now = time.time()
+            if now - last_broadcast[0] >= 0.2:
+                last_broadcast[0] = now
+                _broadcast_collab_event(project.name, task.id, {
+                    "type": "chunk_output",
+                    "data": {"content": data},
+                })
 
     # Check if paused
     task_key = f"{project.name}:{task.id}"
@@ -1558,6 +1571,7 @@ Be substantive and make real progress each iteration.""",
         previous_feedback=previous_feedback,
         on_output=on_output,
         baseline_commit="",
+        use_pty=True,
     )
 
     logger.info(f"Worker finished. Success: {result.success}, Output lines: {len(output_buffer)}, Summary: {result.summary[:100] if result.summary else 'None'}...")

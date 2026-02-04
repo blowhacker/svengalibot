@@ -3,12 +3,15 @@
 import base64
 import json
 import logging
+import os
+import platform
+import re
 import subprocess
 import threading
 import queue
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Callable, Iterator
+from typing import Optional, Callable, Iterator, Union
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -198,179 +201,32 @@ class Worker:
         """
         prompt = self._build_prompt(chunk_spec, context, guide, previous_feedback)
 
-        # Get Claude auth directory
-        claude_config_dir = Path.home() / ".claude"
-
-        # Auth strategy (in priority order):
-        # 1. ANTHROPIC_API_KEY env var (paid API key - works everywhere)
-        # 2. ~/.claude/.credentials.json on disk (Linux keeps this)
-        # 3. macOS Keychain extraction (Claude Code stores OAuth creds there)
-        import os
-        import platform
-
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        cred_file = claude_config_dir / ".credentials.json"
-        has_cred_file = cred_file.exists()
-        keychain_creds = None
-
-        # On macOS, try extracting OAuth creds from Keychain if no file on disk
-        if not api_key and not has_cred_file and platform.system() == "Darwin":
-            keychain_creds = self._extract_keychain_credentials()
-            if keychain_creds:
-                logger.info("Extracted OAuth credentials from macOS Keychain")
-
-        if api_key:
-            auth_mode = "api_key"
-            logger.info("Using ANTHROPIC_API_KEY for Docker auth")
-        elif has_cred_file:
-            auth_mode = "mount" if platform.system() == "Linux" else "base64"
-            # Log credential info
-            try:
-                with open(cred_file) as f:
-                    creds_data = json.load(f)
-                expires = creds_data.get("claudeAiOauth", {}).get("expiresAt")
-                logger.info(f"Using credentials file (expiresAt: {expires})")
-            except Exception as e:
-                logger.warning(f"Could not read host credentials: {e}")
-        elif keychain_creds:
-            auth_mode = "keychain"
-            logger.info("Using macOS Keychain OAuth credentials for Docker auth")
-        else:
-            logger.error(f"No auth available: ANTHROPIC_API_KEY not set and {cred_file} not found")
-            hint = (
-                "Run 'claude' to authenticate first. On macOS, also ensure Keychain access is allowed."
-                if platform.system() == "Darwin"
-                else "Run 'claude' to authenticate, or set ANTHROPIC_API_KEY."
-            )
+        try:
+            cmd_parts, setup_script, auth_mode = self._setup_docker_auth()
+        except RuntimeError as e:
             return WorkerResult(
                 success=False, output="", diff="", summary="",
-                error=f"No Docker auth available. {hint}",
+                error=str(e),
             )
 
-        creds_b64 = ""
-        settings_b64 = ""
-        if auth_mode == "base64":
-            # macOS with credentials file: refresh token and encode as base64
-            try:
-                logger.info("Refreshing OAuth token on host...")
-                subprocess.run(
-                    ["claude", "-p", "--dangerously-skip-permissions", "say ok"],
-                    capture_output=True,
-                    timeout=60,
-                )
-                subprocess.run(["sync"], capture_output=True)
-                logger.info("Token refreshed successfully")
-            except Exception as e:
-                logger.warning(f"Token refresh failed (continuing anyway): {e}")
+        # Append the Claude run command to setup script
+        full_setup = (
+            setup_script +
+            " echo '=== Running Claude ==='; "
+            "claude -p --dangerously-skip-permissions"
+        )
 
-            settings_file = claude_config_dir / "settings.json"
-            try:
-                creds_content = cred_file.read_text()
-                creds_b64 = base64.b64encode(creds_content.encode()).decode()
-                logger.info(f"Read credentials ({len(creds_content)} bytes)")
-                if settings_file.exists():
-                    settings_b64 = base64.b64encode(settings_file.read_text().encode()).decode()
-            except Exception as e:
-                logger.error(f"Failed to read credentials: {e}")
-
-        if auth_mode == "api_key":
-            # Pass API key as env var - simplest and most portable
-            setup_script = (
-                "echo '=== Claude auth: API key ==='; "
-                "echo '=== Running Claude ==='; "
-                "claude -p --dangerously-skip-permissions"
-            )
-
-            cmd = [
-                "docker", "run",
-                "--rm",
-                "-i",
-                "-v", f"{self.workspace_dir.absolute()}:/workspace",
-                "-e", "HOME=/home/worker",
-                "-e", f"ANTHROPIC_API_KEY={api_key}",
-                "--memory", self.docker_memory,
-                "--cpus", str(self.docker_cpus),
-            ]
-        elif auth_mode in ("mount", "keychain"):
-            # Write credentials to a temp dir and mount into container
-            import tempfile, shutil
-            self._auth_tmpdir = tempfile.mkdtemp(prefix="svengali-auth-")
-
-            if auth_mode == "keychain":
-                # Write Keychain-extracted creds to temp file
-                creds_path = Path(self._auth_tmpdir) / ".credentials.json"
-                creds_path.write_text(json.dumps(keychain_creds))
-                logger.info(f"Wrote Keychain credentials to temp dir")
-            else:
-                # Linux: copy existing credentials file
-                shutil.copy2(cred_file, Path(self._auth_tmpdir) / ".credentials.json")
-
-            settings_file = claude_config_dir / "settings.json"
-            if settings_file.exists():
-                shutil.copy2(settings_file, Path(self._auth_tmpdir) / "settings.json")
-            logger.info(f"Auth temp dir: {self._auth_tmpdir}")
-
-            setup_script = (
-                "echo '=== Claude auth: volume mount ==='; "
-                "if [ ! -s /home/worker/.claude/.credentials.json ]; then "
-                "  echo 'ERROR: credentials file missing or empty' >&2; exit 1; "
-                "fi; "
-                "grep -o 'expiresAt\":[0-9]*' /home/worker/.claude/.credentials.json | head -1; "
-                "echo '=== Running Claude ==='; "
-                "claude -p --dangerously-skip-permissions"
-            )
-
-            cmd = [
-                "docker", "run",
-                "--rm",
-                "-i",
-                "-v", f"{self.workspace_dir.absolute()}:/workspace",
-                "-v", f"{self._auth_tmpdir}:/home/worker/.claude",
-                "-e", "HOME=/home/worker",
-                "--memory", self.docker_memory,
-                "--cpus", str(self.docker_cpus),
-            ]
-        else:
-            # macOS fallback: pass credentials as base64 env vars
-            setup_script = (
-                "echo '=== Claude auth: base64 inject ==='; "
-                "printf '%s' \"$CREDS_B64\" | base64 -d > /home/worker/.claude/.credentials.json; "
-                "printf '%s' \"$SETTINGS_B64\" | base64 -d > /home/worker/.claude/settings.json 2>/dev/null || true; "
-                "if [ ! -s /home/worker/.claude/.credentials.json ]; then "
-                "  echo 'ERROR: credentials decode failed - file is empty' >&2; exit 1; "
-                "fi; "
-                "python3 -c \"import json; json.load(open('/home/worker/.claude/.credentials.json'))\" 2>/dev/null || "
-                "  { echo 'ERROR: credentials file is not valid JSON' >&2; exit 1; }; "
-                "grep -o 'expiresAt\":[0-9]*' /home/worker/.claude/.credentials.json | head -1; "
-                "echo '=== Running Claude ==='; "
-                "claude -p --dangerously-skip-permissions"
-            )
-
-            cmd = [
-                "docker", "run",
-                "--rm",
-                "-i",
-                "-v", f"{self.workspace_dir.absolute()}:/workspace",
-                "-e", "HOME=/home/worker",
-                "-e", f"CREDS_B64={creds_b64}",
-                "-e", f"SETTINGS_B64={settings_b64}",
-                "--memory", self.docker_memory,
-                "--cpus", str(self.docker_cpus),
-            ]
-
-        # Add user-configured mounts
-        for mount in self.mounts:
-            mode = "ro" if mount.get("readonly", True) else "rw"
-            cmd.extend(["-v", f"{mount['host']}:{mount['container']}:{mode}"])
-
-        cmd.extend([
+        cmd = [
+            "docker", "run",
+            "--rm",
+            "-i",
+        ] + cmd_parts + [
             DOCKER_IMAGE,
-            "bash", "-c", setup_script,
-        ])
+            "bash", "-c", full_setup,
+        ]
 
-        logger.info(f"Executing Claude CLI in Docker container")
-        logger.info(f"Host .claude dir: {claude_config_dir}")
-        logger.info(f"Docker script: {setup_script[:200]}...")
+        logger.info("Executing Claude CLI in Docker container")
+        logger.info(f"Docker script: {full_setup[:200]}...")
         logger.debug(f"Prompt (first 200 chars): {prompt[:200]}...")
 
         try:
@@ -426,14 +282,7 @@ class Worker:
                 error=str(e),
             )
         finally:
-            # Clean up temp auth dir if created
-            if hasattr(self, '_auth_tmpdir') and self._auth_tmpdir:
-                import shutil
-                try:
-                    shutil.rmtree(self._auth_tmpdir)
-                except Exception:
-                    pass
-                self._auth_tmpdir = None
+            self._cleanup_docker_auth()
 
     def _extract_keychain_credentials(self) -> Optional[dict]:
         """Extract Claude OAuth credentials from macOS Keychain.
@@ -471,17 +320,442 @@ class Worker:
             logger.warning(f"Keychain extraction failed: {e}")
             return None
 
+    @staticmethod
+    def _strip_ansi(text: str) -> str:
+        """Strip ANSI escape sequences from text for clean summary extraction."""
+        return re.sub(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]|\x1b\[[\?]?[0-9;]*[hlm]', '', text)
+
+    def _setup_docker_auth(self):
+        """Set up Docker authentication and return (auth_env_args, setup_script, cleanup_fn).
+
+        Shared between execute_docker and execute_docker_pty to avoid duplication.
+        Returns:
+            tuple: (cmd_parts, setup_script, auth_mode) where cmd_parts are docker run args
+                   before the image name, setup_script is the bash script prefix,
+                   and auth_mode is a string describing the auth method used.
+        Raises:
+            RuntimeError: If no authentication method is available.
+        """
+        claude_config_dir = Path.home() / ".claude"
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        cred_file = claude_config_dir / ".credentials.json"
+        has_cred_file = cred_file.exists()
+        keychain_creds = None
+
+        # On macOS, try extracting OAuth creds from Keychain if no file on disk
+        if not api_key and not has_cred_file and platform.system() == "Darwin":
+            keychain_creds = self._extract_keychain_credentials()
+            if keychain_creds:
+                logger.info("Extracted OAuth credentials from macOS Keychain")
+
+        if api_key:
+            auth_mode = "api_key"
+            logger.info("Using ANTHROPIC_API_KEY for Docker auth")
+        elif has_cred_file:
+            auth_mode = "mount" if platform.system() == "Linux" else "base64"
+            try:
+                with open(cred_file) as f:
+                    creds_data = json.load(f)
+                expires = creds_data.get("claudeAiOauth", {}).get("expiresAt")
+                logger.info(f"Using credentials file (expiresAt: {expires})")
+            except Exception as e:
+                logger.warning(f"Could not read host credentials: {e}")
+        elif keychain_creds:
+            auth_mode = "keychain"
+            logger.info("Using macOS Keychain OAuth credentials for Docker auth")
+        else:
+            logger.error(f"No auth available: ANTHROPIC_API_KEY not set and {cred_file} not found")
+            hint = (
+                "Run 'claude' to authenticate first. On macOS, also ensure Keychain access is allowed."
+                if platform.system() == "Darwin"
+                else "Run 'claude' to authenticate, or set ANTHROPIC_API_KEY."
+            )
+            raise RuntimeError(f"No Docker auth available. {hint}")
+
+        creds_b64 = ""
+        settings_b64 = ""
+        if auth_mode == "base64":
+            try:
+                logger.info("Refreshing OAuth token on host...")
+                subprocess.run(
+                    ["claude", "-p", "--dangerously-skip-permissions", "say ok"],
+                    capture_output=True,
+                    timeout=60,
+                )
+                subprocess.run(["sync"], capture_output=True)
+                logger.info("Token refreshed successfully")
+            except Exception as e:
+                logger.warning(f"Token refresh failed (continuing anyway): {e}")
+
+            settings_file = claude_config_dir / "settings.json"
+            try:
+                creds_content = cred_file.read_text()
+                creds_b64 = base64.b64encode(creds_content.encode()).decode()
+                logger.info(f"Read credentials ({len(creds_content)} bytes)")
+                if settings_file.exists():
+                    settings_b64 = base64.b64encode(settings_file.read_text().encode()).decode()
+            except Exception as e:
+                logger.error(f"Failed to read credentials: {e}")
+
+        # Build cmd parts and setup_script based on auth_mode
+        cmd_parts = [
+            "-v", f"{self.workspace_dir.absolute()}:/workspace",
+            "-e", "HOME=/home/worker",
+            "--memory", self.docker_memory,
+            "--cpus", str(self.docker_cpus),
+        ]
+
+        if auth_mode == "api_key":
+            cmd_parts.extend(["-e", f"ANTHROPIC_API_KEY={api_key}"])
+            setup_script = "echo '=== Claude auth: API key ===';"
+
+        elif auth_mode in ("mount", "keychain"):
+            import tempfile, shutil
+            self._auth_tmpdir = tempfile.mkdtemp(prefix="svengali-auth-")
+
+            if auth_mode == "keychain":
+                creds_path = Path(self._auth_tmpdir) / ".credentials.json"
+                creds_path.write_text(json.dumps(keychain_creds))
+                logger.info("Wrote Keychain credentials to temp dir")
+            else:
+                shutil.copy2(cred_file, Path(self._auth_tmpdir) / ".credentials.json")
+
+            settings_file = claude_config_dir / "settings.json"
+            if settings_file.exists():
+                shutil.copy2(settings_file, Path(self._auth_tmpdir) / "settings.json")
+            logger.info(f"Auth temp dir: {self._auth_tmpdir}")
+
+            cmd_parts.extend(["-v", f"{self._auth_tmpdir}:/home/worker/.claude"])
+            setup_script = (
+                "echo '=== Claude auth: volume mount ==='; "
+                "if [ ! -s /home/worker/.claude/.credentials.json ]; then "
+                "  echo 'ERROR: credentials file missing or empty' >&2; exit 1; "
+                "fi; "
+                "grep -o 'expiresAt\":[0-9]*' /home/worker/.claude/.credentials.json | head -1;"
+            )
+
+        else:
+            # base64 mode
+            cmd_parts.extend([
+                "-e", f"CREDS_B64={creds_b64}",
+                "-e", f"SETTINGS_B64={settings_b64}",
+            ])
+            setup_script = (
+                "echo '=== Claude auth: base64 inject ==='; "
+                "printf '%s' \"$CREDS_B64\" | base64 -d > /home/worker/.claude/.credentials.json; "
+                "printf '%s' \"$SETTINGS_B64\" | base64 -d > /home/worker/.claude/settings.json 2>/dev/null || true; "
+                "if [ ! -s /home/worker/.claude/.credentials.json ]; then "
+                "  echo 'ERROR: credentials decode failed - file is empty' >&2; exit 1; "
+                "fi; "
+                "python3 -c \"import json; json.load(open('/home/worker/.claude/.credentials.json'))\" 2>/dev/null || "
+                "  { echo 'ERROR: credentials file is not valid JSON' >&2; exit 1; }; "
+                "grep -o 'expiresAt\":[0-9]*' /home/worker/.claude/.credentials.json | head -1;"
+            )
+
+        # Add user-configured mounts
+        for mount in self.mounts:
+            mode = "ro" if mount.get("readonly", True) else "rw"
+            cmd_parts.extend(["-v", f"{mount['host']}:{mount['container']}:{mode}"])
+
+        return cmd_parts, setup_script, auth_mode
+
+    def _cleanup_docker_auth(self):
+        """Clean up temp auth dir if created by _setup_docker_auth."""
+        if hasattr(self, '_auth_tmpdir') and self._auth_tmpdir:
+            import shutil
+            try:
+                shutil.rmtree(self._auth_tmpdir)
+            except Exception:
+                pass
+            self._auth_tmpdir = None
+
+    def execute_local_pty(
+        self,
+        chunk_spec: dict,
+        context: str,
+        guide: dict,
+        previous_feedback: Optional[str] = None,
+        on_output: Optional[Callable[[bytes], None]] = None,
+        baseline_commit: Optional[str] = None,
+    ) -> WorkerResult:
+        """Execute a chunk locally using Claude CLI with a PTY for full terminal rendering.
+
+        The PTY allows Claude's React Ink UI (colors, spinners, progress bars) to render
+        properly, and the raw ANSI output is streamed via on_output as bytes.
+        """
+        import pty
+        import select
+        import fcntl
+        import struct
+        import termios
+
+        prompt = self._build_prompt(chunk_spec, context, guide, previous_feedback)
+
+        logger.info(f"Executing Claude CLI (PTY mode) in {self.workspace_dir}")
+        logger.debug(f"Prompt (first 200 chars): {prompt[:200]}...")
+
+        try:
+            if not baseline_commit:
+                baseline_commit = self._get_current_commit()
+            logger.info(f"Using baseline commit for diff: {baseline_commit[:8] if baseline_commit else 'none'}")
+
+            # Create PTY pair
+            master_fd, slave_fd = pty.openpty()
+
+            # Set terminal size to 120x40
+            winsize = struct.pack('HHHH', 40, 120, 0, 0)
+            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
+
+            # Launch Claude with PTY for stdout/stderr, PIPE for stdin
+            cmd = ["claude", "--dangerously-skip-permissions"]
+            logger.info(f"Starting Claude CLI (PTY) in {self.workspace_dir}")
+            logger.info(f"Prompt length: {len(prompt)} chars")
+
+            process = subprocess.Popen(
+                cmd,
+                cwd=self.workspace_dir,
+                stdin=subprocess.PIPE,
+                stdout=slave_fd,
+                stderr=slave_fd,
+            )
+
+            # Close slave_fd in parent - child has it
+            os.close(slave_fd)
+
+            # Write prompt to stdin then close to signal EOF
+            try:
+                process.stdin.write(prompt.encode('utf-8'))
+                process.stdin.close()
+            except Exception as e:
+                logger.warning(f"Failed to write prompt to stdin: {e}")
+
+            logger.info("Reading PTY output (max 10 minutes)...")
+
+            # Collect all raw output for summary extraction
+            raw_output_parts = []
+            import time
+            start_time = time.time()
+            timeout = 600  # 10 minutes
+
+            while True:
+                # Check timeout
+                if time.time() - start_time > timeout:
+                    logger.error("Claude PTY timed out after 10 minutes")
+                    process.kill()
+                    break
+
+                # Check if process has exited and no more data
+                ready, _, _ = select.select([master_fd], [], [], 0.1)
+
+                if ready:
+                    try:
+                        data = os.read(master_fd, 4096)
+                        if not data:
+                            break
+                        raw_output_parts.append(data)
+                        if on_output:
+                            on_output(data)
+                    except OSError:
+                        # PTY closed
+                        break
+                elif process.poll() is not None:
+                    # Process exited - drain remaining output
+                    while True:
+                        ready, _, _ = select.select([master_fd], [], [], 0.05)
+                        if not ready:
+                            break
+                        try:
+                            data = os.read(master_fd, 4096)
+                            if not data:
+                                break
+                            raw_output_parts.append(data)
+                            if on_output:
+                                on_output(data)
+                        except OSError:
+                            break
+                    break
+
+            os.close(master_fd)
+            process.wait()
+
+            logger.info(f"Claude CLI (PTY) exited with code {process.returncode}")
+
+            # Combine raw output and strip ANSI for summary
+            raw_bytes = b''.join(raw_output_parts)
+            output_text = raw_bytes.decode('utf-8', errors='replace')
+            clean_output = self._strip_ansi(output_text)
+
+            # Get diff
+            diff = self._get_diff_since_commit(baseline_commit)
+            summary = self._extract_summary(clean_output)
+
+            return WorkerResult(
+                success=process.returncode == 0,
+                output=clean_output,
+                diff=diff,
+                summary=summary,
+                error=None if process.returncode == 0 else f"Exit code: {process.returncode}",
+            )
+
+        except Exception as e:
+            import traceback
+            logger.error(f"Worker execute_local_pty failed: {e}\n{traceback.format_exc()}")
+            return WorkerResult(
+                success=False,
+                output="",
+                diff="",
+                summary="",
+                error=str(e),
+            )
+
+    def execute_docker_pty(
+        self,
+        chunk_spec: dict,
+        context: str,
+        guide: dict,
+        previous_feedback: Optional[str] = None,
+        on_output: Optional[Callable[[bytes], None]] = None,
+        baseline_commit: Optional[str] = None,
+    ) -> WorkerResult:
+        """Execute a chunk in Docker with PTY allocation for terminal rendering.
+
+        Uses docker run -t to allocate a PTY inside the container, giving us
+        full React Ink UI output on Docker's stdout.
+        """
+        prompt = self._build_prompt(chunk_spec, context, guide, previous_feedback)
+
+        logger.info("Executing Claude CLI in Docker container (PTY mode)")
+        logger.debug(f"Prompt (first 200 chars): {prompt[:200]}...")
+
+        try:
+            cmd_parts, setup_script, auth_mode = self._setup_docker_auth()
+        except RuntimeError as e:
+            return WorkerResult(
+                success=False, output="", diff="", summary="",
+                error=str(e),
+            )
+
+        try:
+            if not baseline_commit:
+                baseline_commit = self._get_current_commit()
+            logger.info(f"Using baseline commit for diff: {baseline_commit[:8] if baseline_commit else 'none'}")
+
+            # Build full setup script - note: no -p flag, we want interactive rendering
+            full_setup = (
+                setup_script +
+                " echo '=== Running Claude (PTY) ==='; "
+                "claude --dangerously-skip-permissions"
+            )
+
+            cmd = [
+                "docker", "run",
+                "--rm",
+                "-i",
+                "-t",  # Allocate PTY inside container
+                "-e", "COLUMNS=120",
+                "-e", "LINES=40",
+            ] + cmd_parts + [
+                DOCKER_IMAGE,
+                "bash", "-c", full_setup,
+            ]
+
+            logger.info(f"Docker script: {full_setup[:200]}...")
+
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+
+            logger.info("Writing prompt to Docker stdin and reading PTY output...")
+
+            # Write prompt to stdin then close
+            try:
+                process.stdin.write(prompt.encode('utf-8'))
+                process.stdin.close()
+            except Exception as e:
+                logger.warning(f"Failed to write prompt to Docker stdin: {e}")
+
+            # Read loop - Docker -t gives us PTY output on stdout as bytes
+            raw_output_parts = []
+            import time
+            start_time = time.time()
+            timeout = 600
+
+            while True:
+                if time.time() - start_time > timeout:
+                    logger.error("Docker Claude PTY timed out after 10 minutes")
+                    process.kill()
+                    break
+
+                data = process.stdout.read(4096)
+                if not data:
+                    break
+
+                raw_output_parts.append(data)
+                if on_output:
+                    on_output(data)
+
+            process.wait()
+            logger.info(f"Docker Claude (PTY) finished with exit code {process.returncode}")
+
+            # Combine and clean output
+            raw_bytes = b''.join(raw_output_parts)
+            output_text = raw_bytes.decode('utf-8', errors='replace')
+            clean_output = self._strip_ansi(output_text)
+
+            diff = self._get_diff_since_commit(baseline_commit)
+            summary = self._extract_summary(clean_output)
+
+            return WorkerResult(
+                success=process.returncode == 0,
+                output=clean_output,
+                diff=diff,
+                summary=summary,
+                error=None if process.returncode == 0 else f"Exit code: {process.returncode}",
+            )
+
+        except Exception as e:
+            import traceback
+            logger.error(f"Worker execute_docker_pty failed: {e}\n{traceback.format_exc()}")
+            return WorkerResult(
+                success=False,
+                output="",
+                diff="",
+                summary="",
+                error=str(e),
+            )
+        finally:
+            self._cleanup_docker_auth()
+
     def execute(
         self,
         chunk_spec: dict,
         context: str,
         guide: dict,
         previous_feedback: Optional[str] = None,
-        on_output: Optional[Callable[[str], None]] = None,
+        on_output: Optional[Callable] = None,
         baseline_commit: Optional[str] = None,
+        use_pty: bool = False,
     ) -> WorkerResult:
-        """Execute a chunk using the configured method (local or Docker)."""
-        if self.use_docker:
+        """Execute a chunk using the configured method (local or Docker).
+
+        Args:
+            use_pty: If True, use PTY execution for full terminal rendering.
+                     The on_output callback will receive bytes instead of str.
+        """
+        if use_pty:
+            if self.use_docker:
+                return self.execute_docker_pty(
+                    chunk_spec, context, guide, previous_feedback, on_output, baseline_commit
+                )
+            else:
+                return self.execute_local_pty(
+                    chunk_spec, context, guide, previous_feedback, on_output, baseline_commit
+                )
+        elif self.use_docker:
             return self.execute_docker(
                 chunk_spec, context, guide, previous_feedback, on_output, baseline_commit
             )

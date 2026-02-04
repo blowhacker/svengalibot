@@ -1556,6 +1556,22 @@ textarea:focus {
     border-color: var(--primary);
 }
 
+/* xterm.js terminal message */
+.terminal-message {
+    max-width: 95%;
+}
+
+.terminal-wrapper {
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 0.5rem;
+    min-height: 200px;
+}
+
+.terminal-wrapper .xterm {
+    padding: 4px;
+}
+
 /* Responsive chat */
 @media (max-width: 768px) {
     .chat-layout {

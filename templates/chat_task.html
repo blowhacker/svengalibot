@@ -74,6 +74,10 @@
 {% block scripts %}
 <!-- Marked.js for markdown rendering -->
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<!-- xterm.js for live terminal rendering -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.min.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10/lib/addon-fit.min.js"></script>
 <script>
 const projectName = '{{ project_name }}';
 const taskId = '{{ task_id }}';
@@ -84,6 +88,8 @@ let scrollTimeout = null; // Debounce scroll
 let lastStateUpdate = 0; // Throttle state updates
 let lastChunkOutput = 0; // Throttle chunk output
 let pendingChunkContent = ''; // Buffer for throttled chunks
+let activeTerminal = null; // Current xterm.js Terminal instance
+let activeFitAddon = null; // Current FitAddon instance
 
 // Configure marked for safe rendering (if loaded)
 if (typeof marked !== 'undefined') {
@@ -254,6 +260,69 @@ function finalizeStreamingMessage() {
     }
 }
 
+function createTerminalMessage() {
+    const container = document.getElementById('chat-messages');
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'chat-message worker terminal-message';
+    msgDiv.innerHTML = `
+        <div class="message-header">
+            <span class="message-icon">🤖</span>
+            <span class="message-label">Claude</span>
+            <span class="message-time">${formatTime(new Date().toISOString())}</span>
+        </div>
+        <div class="terminal-wrapper" id="terminal-container"></div>
+    `;
+    container.appendChild(msgDiv);
+
+    // Create xterm.js terminal
+    const termContainer = msgDiv.querySelector('#terminal-container');
+    const term = new window.Terminal({
+        cols: 120,
+        rows: 30,
+        scrollback: 5000,
+        disableStdin: true,
+        cursorBlink: false,
+        theme: {
+            background: '#0d1117',
+            foreground: '#c9d1d9',
+            cursor: '#c9d1d9',
+            selectionBackground: '#264f78',
+            black: '#484f58',
+            red: '#ff7b72',
+            green: '#3fb950',
+            yellow: '#d29922',
+            blue: '#58a6ff',
+            magenta: '#bc8cff',
+            cyan: '#39c5cf',
+            white: '#b1bac4',
+            brightBlack: '#6e7681',
+            brightRed: '#ffa198',
+            brightGreen: '#56d364',
+            brightYellow: '#e3b341',
+            brightBlue: '#79c0ff',
+            brightMagenta: '#d2a8ff',
+            brightCyan: '#56d4dd',
+            brightWhite: '#f0f6fc',
+        },
+    });
+
+    const fitAddon = new window.FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(termContainer);
+
+    // Fit after a brief delay to ensure DOM is ready
+    requestAnimationFrame(() => {
+        try { fitAddon.fit(); } catch(e) {}
+    });
+
+    activeTerminal = term;
+    activeFitAddon = fitAddon;
+    streamingMessageEl = null; // Not using text streaming
+
+    scrollToBottom(true);
+    return term;
+}
+
 function getProviderIcon(provider) {
     const icons = {
         'claude': '🤖',
@@ -353,8 +422,21 @@ function handleStreamEvent(data) {
             // New complete message
             const msgRole = data.data?.role || data.data?.provider;
 
-            // If we were streaming a worker message, just finalize it (don't duplicate)
-            if (streamingMessageEl && (msgRole === 'worker' || data.data?.provider === 'claude')) {
+            if (activeTerminal && (msgRole === 'worker' || data.data?.provider === 'claude')) {
+                // Terminal is active - keep it visible, append summary below
+                const termMsg = document.querySelector('.terminal-message:last-of-type');
+                if (termMsg && data.data?.content) {
+                    const summaryDiv = document.createElement('div');
+                    summaryDiv.className = 'message-content markdown-body';
+                    summaryDiv.style.marginTop = '0.75rem';
+                    summaryDiv.style.borderTop = '1px solid rgba(88, 166, 255, 0.2)';
+                    summaryDiv.style.paddingTop = '0.75rem';
+                    summaryDiv.innerHTML = formatContent(data.data.content, 'worker');
+                    termMsg.appendChild(summaryDiv);
+                }
+                activeTerminal = null;
+                activeFitAddon = null;
+            } else if (streamingMessageEl && (msgRole === 'worker' || data.data?.provider === 'claude')) {
                 // Update streaming message content with final version (includes files)
                 streamingMessageEl.innerHTML = formatContent(data.data?.content || '', 'worker');
                 streamingMessageEl = null;
@@ -371,10 +453,27 @@ function handleStreamEvent(data) {
             break;
 
         case 'worker_started':
-            // Start a new streaming message for worker
+            // Start a terminal message for worker output
             finalizeStreamingMessage();
-            startStreamingMessage('worker', 'claude');
+            if (typeof window.Terminal !== 'undefined') {
+                createTerminalMessage();
+            } else {
+                startStreamingMessage('worker', 'claude');
+            }
             break;
+
+        case 'terminal_data': {
+            // PTY output - decode base64 and write to xterm.js
+            if (activeTerminal && data.data?.content) {
+                try {
+                    const raw = atob(data.data.content);
+                    activeTerminal.write(raw);
+                } catch(e) {
+                    console.error('Failed to decode terminal data:', e);
+                }
+            }
+            break;
+        }
 
         case 'chunk_output': {
             // Worker output streaming - throttle to prevent UI lock
@@ -421,6 +520,8 @@ function handleStreamEvent(data) {
 
         case 'task_completed':
             finalizeStreamingMessage();
+            activeTerminal = null;
+            activeFitAddon = null;
             appendMessage({
                 role: 'system',
                 provider: 'system',
@@ -433,6 +534,8 @@ function handleStreamEvent(data) {
 
         case 'task_paused':
             finalizeStreamingMessage();
+            activeTerminal = null;
+            activeFitAddon = null;
             appendMessage({
                 role: 'system',
                 provider: 'system',
@@ -445,6 +548,8 @@ function handleStreamEvent(data) {
         case 'task_failed':
         case 'error':
             finalizeStreamingMessage();
+            activeTerminal = null;
+            activeFitAddon = null;
             appendMessage({
                 role: 'system',
                 provider: 'system',
@@ -710,6 +815,13 @@ function getFileIcon(ext) {
 
 // Refresh files button
 document.getElementById('btn-refresh-files').addEventListener('click', loadFileTree);
+
+// Resize xterm.js terminal on window resize
+window.addEventListener('resize', () => {
+    if (activeFitAddon) {
+        try { activeFitAddon.fit(); } catch(e) {}
+    }
+});
 
 // Initialize
 loadTask();
